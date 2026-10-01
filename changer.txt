@@ -1,0 +1,4 @@
+git clone https://github.com/aaravrasquinha-sys/spatial_tracking_system_v1.0.git
+
+User ID: admin@electropneumatics.com
+Password: Admin@123456$
