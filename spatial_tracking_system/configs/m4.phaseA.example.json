@@ -1,0 +1,56 @@
+{
+  "phase": "A",
+  "phase_a": {
+    "calibration_capture_seconds": 2.5,
+    "depth_point_stride": 4,
+    "ransac_dist_thresh_m": 0.02,
+    "ransac_iterations": 500,
+    "gravity_alignment_deg_max": 15.0,
+    "candidate_percentile": 80.0,
+    "min_candidate_points": 50,
+    "fixed_transform": null
+  },
+  "phase_b": {
+    "calibration_path": null,
+    "expected_map_id": null,
+    "walkable_grid_path": null
+  },
+  "depth_measurement": {
+    "min_valid_px_frac": 0.20,
+    "min_range_m": 0.3,
+    "max_range_m": 3.0,
+    "mad_reject_k": 3.5,
+    "mad_floor_m": 0.03,
+    "body_thickness_m": 0.10,
+    "sigma_disparity_px": 0.1,
+    "lateral_px_noise": 2.0
+  },
+  "raycast_measurement": {
+    "pixel_noise_ankles_px": 2.0,
+    "pixel_noise_ankle_single_px": 4.0,
+    "pixel_noise_bbox_fallback_px": 8.0,
+    "raycast_sigma_ceiling_m": 2.0,
+    "max_range_m": 8.0
+  },
+  "height": {
+    "ema_alpha": 0.3,
+    "min_height_m": 0.5,
+    "max_height_m": 2.2,
+    "keypoint_conf_thresh": 0.4,
+    "top_keypoint_patch_radius_px": 2
+  },
+  "gates": {
+    "chi2_gate_2dof": 9.21
+  },
+  "track": {
+    "process_accel_noise": 1.5,
+    "tentative_confirm_hits": 3,
+    "tentative_window_s": 1.0,
+    "coasting_budget_s": 1.0,
+    "lost_grace_s": 1.0,
+    "association_2d_hint_bonus": 2.0
+  },
+  "output": {
+    "jsonl_dir": "logs/world_tracks"
+  }
+}

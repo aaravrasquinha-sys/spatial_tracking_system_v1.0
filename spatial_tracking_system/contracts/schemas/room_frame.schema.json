@@ -1,0 +1,29 @@
+{
+  "title": "room frame derivation (M2)",
+  "type": "object",
+  "required": [
+    "T_room_map"
+  ],
+  "properties": {
+    "T_room_map": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 4,
+        "items": {
+          "type": "number"
+        }
+      }
+    },
+    "walls": {
+      "type": "array"
+    },
+    "floor": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

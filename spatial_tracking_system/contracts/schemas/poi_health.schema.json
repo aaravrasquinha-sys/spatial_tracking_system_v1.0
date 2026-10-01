@@ -1,0 +1,56 @@
+{
+  "title": "poi.v1 health message",
+  "type": "object",
+  "required": [
+    "type",
+    "fps",
+    "calib",
+    "clients",
+    "clock"
+  ],
+  "properties": {
+    "type": {
+      "const": "health"
+    },
+    "fps": {
+      "type": "number"
+    },
+    "calib": {
+      "enum": [
+        "ok",
+        "suspect",
+        "missing"
+      ]
+    },
+    "map_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "temp_c": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "drop_rate": {
+      "type": "number"
+    },
+    "latency_ms": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "clients": {
+      "type": "integer"
+    },
+    "clock": {
+      "enum": [
+        "synced",
+        "device"
+      ]
+    }
+  }
+}

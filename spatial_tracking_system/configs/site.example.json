@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "site": "site_001",
+  "data_dir": "data",
+  "cameras": [
+    {
+      "cam_id": "cam0",
+      "enabled": true,
+      "serial": null,
+      "width": 640, "height": 480, "fps": 30,
+      "expected_fx": 606.75, "expected_fy": 606.57, "expected_cx": 320.19, "expected_cy": 237.06,
+      "intrinsics_tol_px": 2.0,
+      "masks_path": "configs/masks.cam0.example.json"
+    }
+  ],
+  "map":          { "dir": null, "map_id": null },
+  "anchor":       { "dir": null, "sessions": 3, "set": {} },
+  "perception":   { "backend": "trt", "engine_path": null, "weights_path": "yolo11n-pose.pt", "overrides": {} },
+  "localization": { "phase": "B", "overrides": {} },
+  "present": {
+    "host": "127.0.0.1", "port": 8765, "token": null, "tls_cert": null, "tls_key": null,
+    "overrides": {}
+  },
+  "watchdog": {
+    "enabled": true,
+    "depth_check_period_s": 120, "depth_window_frames": 15,
+    "recheck_period_s": 900, "recheck_idle_s": 10, "recheck_frames": 30,
+    "tilt_layer": "off", "on_suspect": "suppress", "startup_check": true
+  },
+  "retention": { "track_log_days": 14, "clip_days": 30, "bag_days": 7 },
+  "capture_profile": null,
+  "slots": {}
+}

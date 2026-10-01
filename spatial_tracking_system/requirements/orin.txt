@@ -1,0 +1,7 @@
+# NOT installed by pip. These come from JetPack or scripts/setup_orin.sh; `python -m sts doctor` verifies each one.
+#   pyrealsense2   built from source with RSUSB + CUDA  (scripts/setup_orin.sh librealsense)
+#                  -> if `pip list` shows a pyrealsense2 wheel, make sure it is not shadowing that build
+#   tensorrt       ships with JetPack (10.3 on your unit). Do not `pip install tensorrt` on the Orin
+#   pycuda         needed by poi_perception.models.trt_engine
+#   gtsam          built from source against numpy 1.26 (scripts/setup_orin.sh gtsam)
+# Export-only (CPU is fine; never imported at runtime):  pip install -e ".[export]"

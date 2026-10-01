@@ -1,0 +1,11 @@
+{
+  "type": "tracks",
+  "schema": "poi.v1",
+  "map_id": null,
+  "cam_id": "cam0",
+  "frame": "local",
+  "seq": 18234,
+  "t_capture": 1790061364.1567,
+  "t_publish": 1790061364.1998,
+  "tracks": []
+}

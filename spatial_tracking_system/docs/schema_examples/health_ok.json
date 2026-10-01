@@ -1,0 +1,11 @@
+{
+  "type": "health",
+  "fps": 29.8,
+  "calib": "missing",
+  "map_id": null,
+  "temp_c": 54.2,
+  "drop_rate": 0.0,
+  "latency_ms": 41.3,
+  "clients": 2,
+  "clock": "synced"
+}

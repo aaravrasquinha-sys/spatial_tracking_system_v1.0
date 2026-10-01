@@ -1,0 +1,109 @@
+html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg); }
+
+canvas.vr-canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+
+.hud {
+  position: fixed;
+  top: env(safe-area-inset-top, 0px);
+  left: 0; right: 0;
+  z-index: 10;
+  pointer-events: none;
+  padding: var(--space-3) var(--space-4);
+}
+
+.hud-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: color-mix(in srgb, var(--surface) 85%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 6px 14px;
+  width: fit-content;
+  font-size: 12px;
+  color: var(--text);
+  backdrop-filter: blur(4px);
+}
+
+.hud .dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--text-dim);
+}
+.hud .dot.is-open { background: var(--accent-live); }
+.hud .dot.is-connecting { background: var(--state-coasting); }
+.hud .dot.is-stalled, .hud .dot.is-closed { background: var(--danger); }
+
+.frame-badge {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  color: var(--text-muted);
+}
+.frame-badge.is-room { color: var(--state-confirmed); }
+.frame-badge.is-local { color: var(--accent-provisional); }
+
+.hud-stats { color: var(--text-muted); margin-left: var(--space-1); }
+
+.provisional-banner {
+  margin-top: 6px;
+  width: fit-content;
+  background: color-mix(in srgb, var(--accent-provisional) 16%, var(--bg));
+  color: var(--accent-provisional);
+  border: 1px solid color-mix(in srgb, var(--accent-provisional) 40%, var(--border));
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+}
+
+.controls {
+  position: fixed;
+  bottom: env(safe-area-inset-bottom, 0px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-3);
+}
+
+.controls .btn {
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  border: 1px solid var(--border-strong);
+  color: var(--text-muted);
+  border-radius: var(--radius-pill);
+  padding: 8px 16px;
+  font-size: 12.5px;
+  backdrop-filter: blur(4px);
+}
+.controls .btn.is-active { color: var(--state-confirmed); border-color: color-mix(in srgb, var(--state-confirmed) 45%, var(--border-strong)); }
+
+.perf {
+  position: fixed;
+  top: env(safe-area-inset-top, 0px);
+  right: var(--space-4);
+  z-index: 10;
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 8px;
+}
+
+/* three.js's VRButton is injected as a plain <button> appended to body;
+   restyle it to match the instrument-panel language instead of its
+   library default look. */
+#VRButton {
+  position: fixed !important;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 64px) !important;
+  left: 50% !important;
+  transform: translateX(-50%);
+  background: var(--state-confirmed) !important;
+  color: #04211c !important;
+  border: none !important;
+  border-radius: var(--radius-pill) !important;
+  font-family: var(--font-ui) !important;
+  font-weight: 600 !important;
+  padding: 10px 22px !important;
+}

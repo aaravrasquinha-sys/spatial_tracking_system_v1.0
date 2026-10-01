@@ -1,0 +1,29 @@
+{
+  "title": "map bundle manifest (M1 lock)",
+  "type": "object",
+  "required": [
+    "map_id"
+  ],
+  "properties": {
+    "map_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{12}$"
+    },
+    "created": {
+      "type": "string"
+    },
+    "capture_profile_sha": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "builder_git_commit": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": true
+}

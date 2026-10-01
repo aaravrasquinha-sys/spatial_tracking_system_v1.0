@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>poi_present · VR</title>
+  <link rel="stylesheet" href="../common/tokens.css" />
+  <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "../common/vendor/three/build/three.module.js",
+        "three/addons/loaders/GLTFLoader.js": "../common/vendor/three/jsm/loaders/GLTFLoader.js",
+        "three/addons/loaders/PLYLoader.js": "../common/vendor/three/jsm/loaders/PLYLoader.js",
+        "three/addons/webxr/VRButton.js": "../common/vendor/three/jsm/webxr/VRButton.js",
+        "three/addons/webxr/XRControllerModelFactory.js": "../common/vendor/three/jsm/webxr/XRControllerModelFactory.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div class="hud" id="hud">
+    <div class="hud-top">
+      <span class="dot" id="conn-dot"></span>
+      <span class="mono" id="conn-label">connecting</span>
+      <span class="frame-badge" id="frame-badge">local</span>
+      <span class="mono hud-stats" id="hud-stats">-- fps · -- ms</span>
+    </div>
+    <div class="provisional-banner" id="provisional-banner" hidden>
+      PROVISIONAL FRAME — not registered to a room map
+    </div>
+  </div>
+
+  <div class="controls" id="controls">
+    <button id="btn-mode" class="btn">Dollhouse</button>
+    <button id="btn-trails" class="btn is-active">Trails</button>
+    <button id="btn-ellipses" class="btn is-active">Uncertainty</button>
+    <button id="btn-deadzones" class="btn">Dead zones</button>
+  </div>
+
+  <div class="perf" id="perf">
+    <span class="mono" id="perf-fps">-- fps</span>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

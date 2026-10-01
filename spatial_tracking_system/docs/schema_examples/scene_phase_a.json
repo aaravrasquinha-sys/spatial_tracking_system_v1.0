@@ -1,0 +1,12 @@
+{
+  "schema": "poi.v1",
+  "frame": "local",
+  "map_id": null,
+  "cam_id": "cam0",
+  "camera": {"R": [[1,0,0],[0,1,0],[0,0,1]], "t": [0.0, 0.0, 2.3], "height_m": 2.3},
+  "intrinsics": {"fx": 606.75, "fy": 606.57, "cx": 320.19, "cy": 237.06, "width": 640, "height": 480},
+  "fov_deg": [56.9, 41.2],
+  "assets": [],
+  "walkable": null,
+  "server_time": 1790061364.0
+}

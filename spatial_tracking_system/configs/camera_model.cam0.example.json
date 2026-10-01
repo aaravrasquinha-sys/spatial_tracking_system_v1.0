@@ -1,0 +1,9 @@
+{
+  "sigma_disparity_px": null,
+  "depth_stereo_fx_px": null,
+  "depth_bias_frac": null,
+  "lateral_px_noise": null,
+  "anchor_noise_multiplier": null,
+  "fitted_on": null,
+  "notes": "Copy to camera_model.cam0.json and fill in numbers after fitting depth noise on a flat wall. null = leave each module's own default."
+}

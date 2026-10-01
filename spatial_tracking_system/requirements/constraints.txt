@@ -1,0 +1,6 @@
+# Pins that match the Orin venv this system was assembled against (pip freeze, JetPack 6 / Python 3.10).
+# Use:  pip install -c requirements/constraints.txt -r requirements/runtime.txt
+numpy==1.26.4            # opencv-python-headless 4.8.x wheels and the source-built gtsam link against numpy 1.x
+scipy>=1.10,<1.16
+opencv-python-headless==4.8.1.78
+websockets>=14,<18

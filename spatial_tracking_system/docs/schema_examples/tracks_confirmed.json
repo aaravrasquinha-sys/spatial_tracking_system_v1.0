@@ -1,0 +1,24 @@
+{
+  "type": "tracks",
+  "schema": "poi.v1",
+  "map_id": null,
+  "cam_id": "cam0",
+  "frame": "local",
+  "seq": 18233,
+  "t_capture": 1790061364.1234,
+  "t_publish": 1790061364.1712,
+  "tracks": [
+    {
+      "id": 7,
+      "state": "confirmed",
+      "p": [2.31, 1.08, 0.0],
+      "v": [0.42, -0.05, 0.0],
+      "cov_xy": [0.004, 0.0003, 0.0031],
+      "height": 1.71,
+      "conf": null,
+      "src": "fused",
+      "age_s": 12.4,
+      "bbox": null
+    }
+  ]
+}

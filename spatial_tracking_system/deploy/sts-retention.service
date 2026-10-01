@@ -1,0 +1,8 @@
+[Unit]
+Description=Prune old STS logs
+
+[Service]
+Type=oneshot
+User=drdo
+WorkingDirectory=/home/drdo/spatial_tracking_system
+ExecStart=/home/drdo/pyslam_venv/bin/python -m sts retention --apply

@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "anchor calibration (M2 -> M4/watchdog)",
+  "type": "object",
+  "required": [
+    "cam_id",
+    "map_id",
+    "T_room_cam",
+    "sigma",
+    "accepted"
+  ],
+  "properties": {
+    "cam_id": {
+      "type": "string"
+    },
+    "map_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "serial": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "T_room_cam": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 4,
+        "items": {
+          "type": "number"
+        }
+      }
+    },
+    "sigma": {
+      "type": "object",
+      "required": [
+        "trans_m",
+        "rot_deg"
+      ],
+      "properties": {
+        "trans_m": {
+          "type": "number"
+        },
+        "rot_deg": {
+          "type": "number"
+        }
+      }
+    },
+    "accepted": {
+      "type": "boolean"
+    },
+    "intrinsics": {
+      "type": "object",
+      "required": [
+        "width",
+        "height",
+        "fx",
+        "fy",
+        "cx",
+        "cy"
+      ]
+    },
+    "method": {
+      "type": "string"
+    },
+    "checks": {
+      "type": "object"
+    },
+    "gravity_up_cam": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "reference_depth": {
+      "type": "string"
+    },
+    "created": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,24 @@
+{
+  "type": "tracks",
+  "schema": "poi.v1",
+  "map_id": "a3f9c2e1b7d4",
+  "cam_id": "cam0",
+  "frame": "room",
+  "seq": 501,
+  "t_capture": 1790062000.0,
+  "t_publish": 1790062000.031,
+  "tracks": [
+    {
+      "id": 2,
+      "state": "coasting",
+      "p": [1.0, -0.5, 0.0],
+      "v": [0.0, 0.0, 0.0],
+      "cov_xy": [0.02, 0.0, 0.02],
+      "height": 1.65,
+      "conf": 0.81,
+      "src": "predicted",
+      "age_s": 3.9,
+      "bbox": [300.0, 90.0, 400.0, 400.0]
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8765,
+    "token": null,
+    "tls_cert": null,
+    "tls_key": null,
+    "static_dir": "web",
+    "max_clients": 8,
+    "client_queue_size": 4,
+    "slow_client_timeout_s": 5.0
+  },
+  "source": {
+    "kind": "synthetic",
+    "replay_path": null,
+    "replay_speed": 1.0,
+    "replay_loop": true,
+    "synthetic_mode": "scripted",
+    "synthetic_n_walkers": 3,
+    "synthetic_seed": 7,
+    "synthetic_rect_m": [0.5, 4.5, -2.0, 2.0]
+  },
+  "scene": {
+    "cam_id": "cam0",
+    "frame": "local",
+    "map_id": null,
+    "map_bundle_dir": null,
+    "walkable_grid_path": null,
+    "fallback_intrinsics": {"fx": 606.75, "fy": 606.57, "cx": 320.19, "cy": 237.06, "width": 640, "height": 480}
+  },
+  "health": {
+    "tick_hz": 1.0,
+    "thermal_zone_globs": ["/sys/class/thermal/thermal_zone*/temp"],
+    "clock_skew_warn_s": 2.0
+  },
+  "camera_preview_enabled": false,
+  "camera_preview_fps": 5.0,
+  "camera_preview_max_wh": [320, 240],
+  "event_log_max": 500
+}

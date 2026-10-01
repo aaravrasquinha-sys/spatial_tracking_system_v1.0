@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spatial-tracking-system"
+version = "1.0.0"
+description = "Single D435i, single room, Jetson Orin Nano: live 3D person tracking in WebXR. M1 map + M2 anchor (pyslam), M3 perception, M4 localization, M5 presentation, and the sts orchestration layer."
+requires-python = ">=3.10"
+# Runtime deps only. Orin-specific native stacks (pyrealsense2 built with RSUSB+CUDA, TensorRT, pycuda,
+# gtsam built from source) come from JetPack / scripts/setup_orin.sh, NOT from pip -- see requirements/orin.txt.
+dependencies = [
+    "numpy>=1.24,<2.0",
+    "scipy>=1.10",
+    "opencv-python-headless>=4.8,<4.9",
+    "scikit-learn>=1.3",
+    "websockets>=14,<18",
+    "psutil>=5.9",
+]
+
+[project.optional-dependencies]
+slam   = ["matplotlib>=3.5"]                       # plots in pyslam.tools.plots (gtsam: build from source)
+export = ["torch", "ultralytics>=8.3", "onnx", "onnxslim"]   # .pt -> ONNX only; NEVER imported by the runtime path
+dev    = ["pytest>=7.4", "pytest-asyncio>=0.23", "jsonschema>=4.18"]
+
+[project.scripts]
+sts = "sts.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pyslam*", "poi_perception*", "poi_localization*", "poi_present*", "sts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit", "tests/integration"]
+asyncio_mode = "auto"
+markers = ["slow: takes more than ~20 s (runs M2's real solver)"]

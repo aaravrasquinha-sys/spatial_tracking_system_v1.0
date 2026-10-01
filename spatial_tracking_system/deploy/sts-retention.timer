@@ -1,0 +1,10 @@
+# /etc/systemd/system/sts-retention.timer (+ sts-retention.service running `python -m sts retention --apply`)
+[Unit]
+Description=Prune old track logs, clips and bags
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target

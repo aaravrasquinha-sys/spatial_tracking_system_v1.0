@@ -1,0 +1,34 @@
+{
+  "title": "poi.v1 event message",
+  "type": "object",
+  "required": [
+    "type",
+    "event",
+    "id",
+    "t"
+  ],
+  "properties": {
+    "type": {
+      "const": "event"
+    },
+    "event": {
+      "enum": [
+        "track_start",
+        "track_confirmed",
+        "track_lost",
+        "track_end",
+        "calib_suspect",
+        "id_switch"
+      ]
+    },
+    "id": {
+      "type": "integer"
+    },
+    "t": {
+      "type": "number"
+    },
+    "detail": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,132 @@
+{
+  "title": "poi.v1 tracks message",
+  "type": "object",
+  "required": [
+    "type",
+    "schema",
+    "cam_id",
+    "frame",
+    "seq",
+    "t_capture",
+    "t_publish",
+    "tracks"
+  ],
+  "properties": {
+    "type": {
+      "const": "tracks"
+    },
+    "schema": {
+      "const": "poi.v1"
+    },
+    "map_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cam_id": {
+      "type": "string"
+    },
+    "frame": {
+      "enum": [
+        "local",
+        "room"
+      ]
+    },
+    "seq": {
+      "type": "integer"
+    },
+    "t_capture": {
+      "type": "number"
+    },
+    "t_publish": {
+      "type": "number"
+    },
+    "tracks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "state",
+          "p",
+          "v",
+          "cov_xy",
+          "src",
+          "age_s"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "tentative",
+              "confirmed",
+              "coasting",
+              "lost"
+            ]
+          },
+          "p": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "number"
+            }
+          },
+          "v": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "number"
+            }
+          },
+          "cov_xy": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "number"
+            }
+          },
+          "height": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "conf": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "src": {
+            "enum": [
+              "depth",
+              "raycast",
+              "fused",
+              "predicted"
+            ]
+          },
+          "age_s": {
+            "type": "number"
+          },
+          "bbox": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "minItems": 4,
+            "maxItems": 4,
+            "items": {
+              "type": "number"
+            }
+          }
+        }
+      }
+    }
+  }
+}

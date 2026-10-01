@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+# runtime data (maps, anchors, captures, bags, engines, logs, locks, generated configs)
+data/
+# your per-site files (the *.example.json templates ARE tracked)
+configs/site.json
+configs/camera_model.cam*.json
+!configs/camera_model.cam*.example.json
+runs/
+debug_frames*/

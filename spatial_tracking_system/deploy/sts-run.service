@@ -1,0 +1,27 @@
+# /etc/systemd/system/sts-run.service  --  edit User= and the two paths, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now sts-run
+[Unit]
+Description=Spatial Tracking System (capture -> M3 -> M4 -> M5 + calibration watchdog)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=drdo
+WorkingDirectory=/home/drdo/spatial_tracking_system
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/home/drdo/pyslam_venv/bin/python -m sts doctor
+# The consistency gate runs inside `sts run` and exits 2 (do-not-restart) if the map/calibration disagree.
+ExecStart=/home/drdo/pyslam_venv/bin/python -m sts run --phase B
+# exit 3 = capture/inference pipeline died on its own -> restart. exit 2 = refused to start -> do NOT restart-loop.
+Restart=on-failure
+RestartPreventExitStatus=2 4
+RestartSec=5
+StartLimitIntervalSec=120
+StartLimitBurst=5
+# graceful stop: SIGTERM is handled by poi_present's install_signal_handlers
+TimeoutStopSec=20
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

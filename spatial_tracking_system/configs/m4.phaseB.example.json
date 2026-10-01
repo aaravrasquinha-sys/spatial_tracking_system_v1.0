@@ -1,0 +1,21 @@
+{
+  "phase": "B",
+  "phase_a": {},
+  "phase_b": {
+    "calibration_path": "configs/calibration.cam0.json",
+    "expected_map_id": null,
+    "walkable_grid_path": null
+  },
+  "depth_measurement": {},
+  "raycast_measurement": {},
+  "height": {},
+  "gates": {},
+  "track": {
+    "tentative_confirm_hits": 3,
+    "coasting_budget_s": 1.0,
+    "lost_grace_s": 1.0
+  },
+  "output": {
+    "jsonl_dir": "logs/world_tracks"
+  }
+}

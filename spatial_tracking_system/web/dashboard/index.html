@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>poi_present · dashboard</title>
+  <link rel="stylesheet" href="../common/tokens.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app" id="app">
+
+    <header class="topbar">
+      <div class="topbar-id">
+        <span class="dot" id="conn-dot" aria-hidden="true"></span>
+        <span class="mono" id="conn-label">connecting</span>
+        <span class="sep">·</span>
+        <span id="cam-id" class="mono">cam0</span>
+        <span class="frame-badge" id="frame-badge">local</span>
+      </div>
+      <div class="topbar-stats mono">
+        <span id="stat-fps" title="frames per second">-- fps</span>
+        <span id="stat-latency" title="capture-to-publish latency">-- ms</span>
+        <span id="stat-clients" title="connected clients">-- clients</span>
+        <span id="stat-temp" title="device temperature">-- °C</span>
+      </div>
+    </header>
+
+    <div class="provisional-banner" id="provisional-banner" hidden>
+      PROVISIONAL FRAME — not registered to a room map
+    </div>
+
+    <main class="layout">
+      <aside class="rail" id="rail">
+        <section class="panel" id="tracks-panel">
+          <h2 class="panel-title">Tracks <span class="count mono" id="track-count">0</span></h2>
+          <div class="track-list" id="track-list">
+            <p class="empty-hint">No one in frame.</p>
+          </div>
+        </section>
+
+        <section class="panel" id="events-panel">
+          <h2 class="panel-title">Events</h2>
+          <div class="event-log" id="event-log"></div>
+        </section>
+      </aside>
+
+      <section class="stage">
+        <canvas id="radar" aria-label="Top-down floor view of tracked people"></canvas>
+        <div class="stage-overlay" id="stage-overlay" hidden>
+          <div class="stage-overlay-msg" id="stage-overlay-msg">STREAM STALLED</div>
+        </div>
+        <div class="legend mono" id="legend">
+          <span><i class="swatch swatch-confirmed"></i>confirmed</span>
+          <span><i class="swatch swatch-coasting"></i>coasting</span>
+          <span><i class="swatch swatch-lost"></i>lost</span>
+          <span class="legend-sep">src</span>
+          <span><i class="swatch swatch-depth"></i>depth</span>
+          <span><i class="swatch swatch-raycast"></i>raycast</span>
+          <span><i class="swatch swatch-fused"></i>fused</span>
+        </div>
+      </section>
+    </main>
+
+    <footer class="toolbar">
+      <div class="toolbar-group">
+        <label class="toggle"><input type="checkbox" id="toggle-trails" checked /> trails</label>
+        <label class="toggle"><input type="checkbox" id="toggle-ellipses" checked /> uncertainty</label>
+        <label class="toggle"><input type="checkbox" id="toggle-markers" /> floor markers</label>
+      </div>
+      <div class="toolbar-group">
+        <button id="btn-freeze" class="btn">Freeze</button>
+        <button id="btn-load-markers" class="btn">Load floor markers…</button>
+        <input type="file" id="gt-file" accept="application/json" hidden />
+      </div>
+    </footer>
+
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

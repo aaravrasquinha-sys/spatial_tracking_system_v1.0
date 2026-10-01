@@ -1,0 +1,45 @@
+{
+  "camera": {
+    "cam_id": "cam0",
+    "width": 640,
+    "height": 480,
+    "fps": 30,
+    "serial": null,
+    "expected_fx": 606.75,
+    "expected_fy": 606.57,
+    "expected_cx": 320.19,
+    "expected_cy": 237.06
+  },
+  "footpoint": {
+    "ankle_conf_thresh": 0.5,
+    "torso_shrink_frac": 0.15,
+    "fallback_strip_frac": [0.20, 0.60]
+  },
+  "track": {
+    "track_high_thresh": 0.6,
+    "track_low_thresh": 0.1,
+    "new_track_thresh": 0.7,
+    "match_iou_thresh": 0.3,
+    "keypoint_conf_weight": 0.15,
+    "lost_buffer_frames": 30,
+    "min_hits_to_confirm": 3
+  },
+  "model": {
+    "backend": "trt",
+    "engine_path": "models/engines/yolo11n_pose_fp16.engine",
+    "weights_path": "yolo11n-pose.pt",
+    "input_width": 640,
+    "input_height": 480,
+    "det_conf_thresh": 0.1,
+    "nms_iou_thresh": 0.45,
+    "keypoint_conf_thresh_for_decode": 0.05
+  },
+  "mask": {
+    "masks_path": "configs/masks.cam0.example.json"
+  },
+  "output": {
+    "jsonl_dir": "logs/detections",
+    "clips_dir": "logs/clips",
+    "low_confidence_streak_s": 1.0
+  }
+}

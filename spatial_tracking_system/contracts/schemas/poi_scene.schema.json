@@ -1,0 +1,52 @@
+{
+  "title": "poi.v1 scene (GET /api/scene)",
+  "type": "object",
+  "required": [
+    "schema",
+    "frame",
+    "cam_id",
+    "camera",
+    "intrinsics",
+    "assets"
+  ],
+  "properties": {
+    "schema": {
+      "const": "poi.v1"
+    },
+    "frame": {
+      "enum": [
+        "local",
+        "room"
+      ]
+    },
+    "map_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cam_id": {
+      "type": "string"
+    },
+    "camera": {
+      "type": "object",
+      "required": [
+        "R",
+        "t",
+        "height_m"
+      ]
+    },
+    "intrinsics": {
+      "type": "object"
+    },
+    "assets": {
+      "type": "array"
+    },
+    "walkable": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  }
+}

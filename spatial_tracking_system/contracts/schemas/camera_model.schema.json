@@ -1,0 +1,46 @@
+{
+  "title": "camera_model.<cam>.json (sensor_model slot)",
+  "type": "object",
+  "properties": {
+    "sigma_disparity_px": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "depth_stereo_fx_px": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "depth_bias_frac": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "lateral_px_noise": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "anchor_noise_multiplier": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "fitted_on": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}
