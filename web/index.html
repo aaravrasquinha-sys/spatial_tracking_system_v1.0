@@ -3,86 +3,48 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>poi_present · 3D viewer</title>
-  <link rel="stylesheet" href="../common/tokens.css" />
-  <link rel="stylesheet" href="style.css" />
-  <script type="importmap">
-    {
-      "imports": {
-        "three": "../common/vendor/three/build/three.module.js",
-        "three/addons/controls/OrbitControls.js": "../common/vendor/three/jsm/controls/OrbitControls.js",
-        "three/addons/loaders/PLYLoader.js": "../common/vendor/three/jsm/loaders/PLYLoader.js"
-      }
+  <title>poi_present</title>
+  <link rel="stylesheet" href="common/tokens.css" />
+  <style>
+    body { display: grid; place-items: center; height: 100dvh; }
+    .card {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: var(--radius-md);
+      padding: var(--space-6);
+      width: min(420px, 88vw);
     }
-  </script>
+    h1 {
+      font-family: var(--font-mono);
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--text-bright);
+      margin: 0 0 var(--space-1);
+    }
+    p.sub { color: var(--text-muted); font-size: 13px; margin: 0 0 var(--space-5); }
+    a.link {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: var(--space-3) var(--space-4);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      color: var(--text-bright);
+      text-decoration: none;
+      margin-bottom: var(--space-2);
+      font-size: 14px;
+    }
+    a.link:hover { border-color: var(--state-confirmed); }
+    a.link .go { color: var(--text-dim); font-family: var(--font-mono); font-size: 12px; }
+  </style>
 </head>
 <body>
-  <div id="stage"></div>
-
-  <header class="hud">
-    <span class="dot" id="conn-dot"></span>
-    <span class="mono" id="conn-label">connecting</span>
-    <span class="badge" id="frame-badge">--</span>
-    <span class="badge mono" id="map-badge" title="map_id">no map</span>
-    <span class="mono muted" id="hud-stats">-- fps</span>
-  </header>
-
-  <div class="banner" id="banner" hidden></div>
-
-  <aside class="panel panel-left" id="panel-left">
-    <section>
-      <h2>View</h2>
-      <div class="btn-row">
-        <button class="btn" data-view="top" title="Key 1">Top</button>
-        <button class="btn" data-view="iso" title="Key 2">Iso</button>
-        <button class="btn" data-view="sensor" title="Key 3">Sensor</button>
-      </div>
-    </section>
-
-    <section>
-      <h2>Layers</h2>
-      <label class="chk"><input type="checkbox" id="l-points" checked /> Room point cloud</label>
-      <label class="chk"><input type="checkbox" id="l-grid" checked /> Floor grid</label>
-      <label class="chk"><input type="checkbox" id="l-walk" /> Walkable area</label>
-      <label class="chk"><input type="checkbox" id="l-sensor" checked /> Sensor + frustum</label>
-      <label class="chk"><input type="checkbox" id="l-box" checked /> Person boxes</label>
-      <label class="chk"><input type="checkbox" id="l-skel" checked /> Skeletons (3D)</label>
-      <label class="chk"><input type="checkbox" id="l-trails" checked /> Trails <kbd>T</kbd></label>
-      <label class="chk"><input type="checkbox" id="l-ellipse" checked /> Uncertainty</label>
-      <label class="chk"><input type="checkbox" id="l-labels" checked /> Labels <kbd>L</kbd></label>
-    </section>
-
-    <section>
-      <h2>Point cloud</h2>
-      <label class="rng">Ceiling cut <span class="mono" id="v-clip">off</span>
-        <input type="range" id="s-clip" min="0.3" max="3" step="0.05" value="3" />
-      </label>
-      <label class="rng">Point size <span class="mono" id="v-psize">0.035</span>
-        <input type="range" id="s-psize" min="0.01" max="0.10" step="0.005" value="0.035" />
-      </label>
-      <div class="mono muted small" id="map-info">no map loaded</div>
-    </section>
-
-    <section class="hint small muted">
-      Drag = orbit · right-drag = pan · wheel = zoom<br />
-      Double-click a person to follow · <kbd>Esc</kbd> to release
-    </section>
-  </aside>
-
-  <aside class="panel panel-right" id="panel-right">
-    <section>
-      <h2>People <span class="mono muted" id="people-count">0</span></h2>
-      <div id="track-list" class="track-list"></div>
-    </section>
-    <section>
-      <h2>Events</h2>
-      <div id="event-log" class="event-log mono small"></div>
-    </section>
-  </aside>
-
-  <div class="toast" id="toast" hidden></div>
-  <div class="perf mono" id="perf">-- fps</div>
-
-  <script type="module" src="app.js"></script>
+  <div class="card">
+    <h1>poi_present</h1>
+    <p class="sub">Module 5 — pick a viewer.</p>
+    <a class="link" href="dashboard/"><span>Dashboard</span><span class="go mono">2D →</span></a>
+    <a class="link" href="viewer3d/"><span>3D viewer</span><span class="go mono">3D →</span></a>
+    <a class="link" href="vr/"><span>WebXR viewer</span><span class="go mono">VR →</span></a>
+  </div>
 </body>
 </html>
