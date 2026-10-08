@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+
+!/usr/bin/env python3
 """
 Run Module 5 (dashboard + VR publisher).
 
@@ -76,6 +77,7 @@ def _build_live(args, present_cfg: PresentConfig, server: PresentServer):
     m4_pipeline = M4Pipeline(m4_cfg, provider, walkable_grid=walkable_grid, writer=m4_writer, on_tracks=live_source.submit)
 
     T = m4_pipeline.floor_transform
+    live_source.map_id = T.map_id  # was left as None, which overwrote the scene's real map_id on the first frame
     server.scene.update_camera(T.R.tolist(), T.t.tolist(), T.camera_height_m, frame_name, T.map_id)
     log.info(f"M4 phase={m4_cfg.phase}, camera_height={T.camera_height_m:.3f}m -- scene updated")
 
