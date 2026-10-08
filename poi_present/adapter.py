@@ -48,6 +48,7 @@ def record_to_wire(record: Any) -> TrackWire:
     height = d.get("height", d.get("height_m"))
     conf = d.get("conf")  # absent entirely on Phase A -> None, correct
     bbox = d.get("bbox")  # absent entirely on Phase A -> None, correct
+    joints = d.get("joints")  # optional 3D skeleton; absent / None -> not sent
 
     return TrackWire(
         id=int(track_id),
@@ -60,6 +61,7 @@ def record_to_wire(record: Any) -> TrackWire:
         src=str(d["src"]),
         age_s=float(d["age_s"]),
         bbox=None if bbox is None else tuple(bbox),
+        joints=None if joints is None else [None if j is None else [float(a) for a in j] for j in joints],
     )
 
 

@@ -28,6 +28,7 @@ class WorldTrackPhaseA:
     height_m: Optional[float]
     src: str  # "depth" | "raycast" | "fused" | "predicted"
     age_s: float
+    joints: Optional[list] = None  # optional 3D skeleton, see measurement/joints.py
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -47,6 +48,7 @@ class WorldTrackPhaseB:
     src: str
     age_s: float
     bbox: Tuple[float, float, float, float]
+    joints: Optional[list] = None  # optional 3D skeleton: 17 x [x, y, z, conf] | None (room frame)
 
     def to_dict(self) -> dict:
         return asdict(self)

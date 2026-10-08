@@ -78,8 +78,17 @@ class TrackWire:
     src: str
     age_s: float
     bbox: Optional[Tuple[float, float, float, float]]
+    # Optional 3D skeleton: 17 x [x, y, z, conf] | null, same frame as p. Omitted from the
+    # wire entirely when None, so messages without poses are byte-identical to before.
+    joints: Optional[List[Optional[List[float]]]] = None
 
     def to_dict(self) -> Dict[str, Any]:
+        d = self._base_dict()
+        if self.joints is not None:
+            d["joints"] = [None if j is None else [_round(j[0], 3), _round(j[1], 3), _round(j[2], 3), _round(j[3], 2)] for j in self.joints]
+        return d
+
+    def _base_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
             "state": self.state,

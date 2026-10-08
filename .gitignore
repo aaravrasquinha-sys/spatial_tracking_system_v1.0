@@ -12,3 +12,13 @@ configs/camera_model.cam*.json
 !configs/camera_model.cam*.example.json
 runs/
 debug_frames*/
+
+# local-only
+logs/
+models
+*.engine
+*.onnx
+*.bag
+*.db3
+__pycache__/
+*.pyc

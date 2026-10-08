@@ -1,0 +1,17 @@
+{
+  "width": 640,
+  "height": 480,
+  "fps": 30,
+  "enable_global_time": true,
+  "visual_preset": "high_accuracy",
+  "laser_power": 360.0,
+  "enable_post_processing": true,
+  "spatial_filter_magnitude": 2.0,
+  "spatial_filter_smooth_alpha": 0.5,
+  "spatial_filter_smooth_delta": 20.0,
+  "temporal_filter_smooth_alpha": 0.4,
+  "temporal_filter_smooth_delta": 20.0,
+  "hole_filling_mode": 0,
+  "depth_min_m": 0.3,
+  "depth_max_m": 6.0
+}

@@ -19,6 +19,7 @@ from poi_localization.io.world_track import (
 )
 from poi_localization.log import get_logger
 from poi_localization.measurement.depth_measurement import compute_depth_measurement, median_depth_in_polygon
+from poi_localization.measurement.joints import lift_joints
 from poi_localization.measurement.raycast_measurement import compute_raycast_measurement
 from poi_localization.tracking.gates import WalkableGrid
 from poi_localization.tracking.height_estimator import estimate_instantaneous_height
@@ -87,6 +88,16 @@ class M4Pipeline:
             fallback_depth_m=fallback_depth_m,
         )
 
+        joints = None
+        if self.cfg.joints.enabled:
+            try:
+                joints = lift_joints(
+                    frame.depth, det.keypoints, frame.intr, self.floor_transform, self.cfg.joints,
+                    ref_depth_m=fallback_depth_m, distortion_coeffs=self.distortion_coeffs,
+                )
+            except Exception as e:  # a skeleton problem must never take tracking down
+                log.debug(f"joints lift failed for 2d id {det.track_id_2d}: {e}")
+
         return DetectionMeasurements(
             track_id_2d=det.track_id_2d,
             det_conf=det.det_conf,
@@ -94,6 +105,7 @@ class M4Pipeline:
             depth_measurement=depth_m,
             raycast_measurement=ray_m,
             height_sample_m=height_sample,
+            joints=joints,
         )
 
     def _to_phase_record(self, o: WorldTrackOutput, t_capture: float):
@@ -108,6 +120,7 @@ class M4Pipeline:
                 height_m=o.height_m,
                 src=o.src,
                 age_s=o.age_s,
+                joints=o.joints,
             )
         return WorldTrackPhaseB(
             id=o.world_track_id,
@@ -120,6 +133,7 @@ class M4Pipeline:
             src=o.src,
             age_s=o.age_s,
             bbox=o.bbox_px if o.bbox_px is not None else (0.0, 0.0, 0.0, 0.0),
+            joints=o.joints,
         )
 
     def process(self, frame: Frame, detections: List[Detection2D]):

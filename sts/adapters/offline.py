@@ -63,7 +63,7 @@ class PyslamLiveMapBuilder:
         if cam.serial:
             argv += ["--serial", cam.serial]
         if record:
-            bag = site.recordings_dir() / (bag_name or f"map_{time.strftime('%Y%m%d_%H%M%S')}.bag")
+            bag = site.recordings_dir() / (bag_name or f"map_{time.strftime('%Y%m%d_%H%M%S')}.db3")
             bag.parent.mkdir(parents=True, exist_ok=True)
             argv += ["--record", str(bag)]
         extra = [a for a in (extra_args or []) if a != "--"]

@@ -136,6 +136,22 @@ class HeightConfig:
 
 
 @dataclass
+class JointsConfig:
+    """Optional 3D skeleton output (poi_localization/measurement/joints.py).
+    Off by default: set "joints": {"enabled": true} in m4.json to turn it on."""
+
+    enabled: bool = False
+    conf_thresh: float = 0.3  # a 2D keypoint below this is not lifted (sent as null)
+    patch_radius_px: int = 3  # 7x7 median depth patch around each keypoint
+    max_depth_dev_m: float = 0.6  # joint depth further than this from torso depth -> use torso depth
+    depth_offset_m: float = 0.05  # push the surface point toward the body centre
+    min_joints: int = 5  # fewer usable joints than this -> no skeleton for the person
+    min_range_m: float = 0.3
+    max_range_m: float = 6.0  # D435i depth is too noisy beyond this for limbs
+    max_age_s: float = 0.25  # a coasting track keeps its last pose at most this long, then sends null
+
+
+@dataclass
 class GateConfig:
     chi2_gate_2dof: float = 9.21  # 99% confidence, 2 DOF chi-square
 
@@ -163,6 +179,7 @@ class M4Config:
     depth_measurement: DepthMeasurementConfig = field(default_factory=DepthMeasurementConfig)
     raycast_measurement: RaycastMeasurementConfig = field(default_factory=RaycastMeasurementConfig)
     height: HeightConfig = field(default_factory=HeightConfig)
+    joints: JointsConfig = field(default_factory=JointsConfig)
     gates: GateConfig = field(default_factory=GateConfig)
     track: TrackLifecycleConfig = field(default_factory=TrackLifecycleConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
@@ -183,6 +200,7 @@ class M4Config:
             depth_measurement=DepthMeasurementConfig(**raw.get("depth_measurement", {})),
             raycast_measurement=RaycastMeasurementConfig(**raw.get("raycast_measurement", {})),
             height=HeightConfig(**raw.get("height", {})),
+            joints=JointsConfig(**raw.get("joints", {})),
             gates=GateConfig(**raw.get("gates", {})),
             track=TrackLifecycleConfig(**raw.get("track", {})),
             output=OutputConfig(**raw.get("output", {})),

@@ -25,6 +25,10 @@ Usage (real camera, Phase A, skip live calibration, known rig geometry):
     python3 scripts/debug_visualize_world.py --m3-config configs/m3.example.json \
         --m4-config configs/m4.phaseA.fixed.example.json --source realsense
 
+Usage (real camera with live web stream on port 8080):
+    python3 scripts/debug_visualize_world.py --m3-config configs/m3.example.json \
+        --m4-config configs/m4.phaseA.fixed.example.json --source realsense --host-stream --no-window
+
 Usage (no hardware, sanity-check the drawing code / a scripted scenario):
     python3 scripts/debug_visualize_world.py --m3-config configs/m3.example.json \
         --m4-config configs/m4.phaseA.fixed.example.json --source synthetic --mock-scenario two_crossing
@@ -42,6 +46,9 @@ import collections
 import json
 import sys
 import time
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import socketserver
 from pathlib import Path
 from typing import Deque, Dict, List, Optional, Tuple
 
@@ -60,6 +67,45 @@ from poi_perception.inference.pose_infer import PoseEstimator
 from poi_perception.io.detection2d import Detection2D
 from poi_perception.runtime.m3_daemon import M3Pipeline, build_backend, build_source
 from poi_perception.runtime.masks import empty_mask_set, load_masks
+
+
+# --- HTTP MJPEG STREAMING SERVER (No Disk I/O) ---
+_stream_frame = None
+_stream_cond = threading.Condition()
+
+class MJPEGHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-type', 'multipart/x-mixed-replace; boundary=frame')
+            self.end_headers()
+            try:
+                while True:
+                    with _stream_cond:
+                        _stream_cond.wait()
+                        if _stream_frame is None:
+                            continue
+                        jpeg = _stream_frame.tobytes()
+                    
+                    self.wfile.write(b'--frame\r\n')
+                    self.send_header('Content-type', 'image/jpeg')
+                    self.send_header('Content-length', len(jpeg))
+                    self.end_headers()
+                    self.wfile.write(jpeg)
+                    self.wfile.write(b'\r\n')
+            except Exception:
+                pass
+
+class ThreadedHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+    pass
+
+def start_stream_server(port=8080):
+    server = ThreadedHTTPServer(('', port), MJPEGHandler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    print(f"\n[STREAMING] Live world tracking feed hosted successfully!")
+    print(f"  View on Workstation browser: http://<jetson_orin_ip>:{port}")
+    print(f"  View via Workstation terminal: ffplay http://<jetson_orin_ip>:{port}\n")
 
 
 def _track_color(track_id: int) -> Tuple[int, int, int]:
@@ -205,6 +251,7 @@ class BirdEyeView:
 
 
 def main() -> None:
+    global _stream_frame
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--m3-config", required=True)
     ap.add_argument("--m4-config", required=True)
@@ -218,8 +265,12 @@ def main() -> None:
     ap.add_argument("--y-half", type=float, default=3.5)
     ap.add_argument("--save-dir", default=None)
     ap.add_argument("--no-window", action="store_true")
+    ap.add_argument("--host-stream", action="store_true", help="host a live web stream on port 8080")
     ap.add_argument("--max-frames", type=int, default=None)
     args = ap.parse_args()
+
+    if args.host_stream:
+        start_stream_server(port=8080)
 
     m3_cfg = M3Config.load(args.m3_config)
     m4_cfg = M4Config.load(args.m4_config)
@@ -280,6 +331,14 @@ def main() -> None:
             if bev_h != target_h:
                 bev_panel = cv2.resize(bev_panel, (int(bev_w * target_h / bev_h), target_h))
             composite = np.hstack([cam_panel, bev_panel])
+
+            # Push frame to the network stream buffer if enabled
+            if args.host_stream:
+                ret, jpeg = cv2.imencode('.jpg', composite, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                if ret:
+                    with _stream_cond:
+                        _stream_frame = jpeg
+                        _stream_cond.notify_all()
 
             if show_window and not window_broken:
                 try:

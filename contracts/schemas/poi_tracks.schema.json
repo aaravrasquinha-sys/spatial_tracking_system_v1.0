@@ -124,6 +124,25 @@
             "items": {
               "type": "number"
             }
+          },
+          "joints": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "minItems": 17,
+            "maxItems": 17,
+            "items": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "minItems": 4,
+              "maxItems": 4,
+              "items": {
+                "type": "number"
+              }
+            }
           }
         }
       }

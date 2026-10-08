@@ -79,7 +79,7 @@ def _pick_motion_fps(dev, rs, stream_type) -> Optional[int]:
 
 class RealSenseSource:
     """Live capture from a connected D435i, or (playback=True) deterministic
-    replay of a native .bag recorded by this same class."""
+    replay of a native .db3 recorded by this same class."""
 
     def __init__(self, width: int = 640, height: int = 480, fps: int = 30,
                  enable_imu: bool = True, serial: Optional[str] = None,

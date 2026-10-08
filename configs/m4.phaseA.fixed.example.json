@@ -2,7 +2,7 @@
   "phase": "A",
   "phase_a": {
     "fixed_transform": {
-      "height_m": 2.3,
+      "height_m": 2.0,
       "pitch_deg": 20.0,
       "yaw_deg": 0.0
     }

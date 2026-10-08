@@ -45,6 +45,8 @@ class DetectionMeasurements:
     depth_measurement: Optional[Measurement]
     raycast_measurement: Optional[Measurement]
     height_sample_m: Optional[float]
+    # 17 x [x, y, z, conf] | None in the floor/room frame (measurement/joints.py), or None
+    joints: Optional[list] = None
 
 
 @dataclass
@@ -62,6 +64,7 @@ class WorldTrackOutput:
     src: str  # "depth" | "raycast" | "fused" | "predicted"
     age_s: float
     bbox_px: Optional[Tuple[float, float, float, float]]
+    joints: Optional[list] = None  # latest 3D skeleton, None when stale / not measured
 
 
 @dataclass
@@ -86,6 +89,8 @@ class _Track:
         self.last_det_conf: float = 0.0
         self.last_src = "predicted"
         self.just_transitioned_to_lost = False
+        self.last_joints: Optional[list] = None
+        self.joints_stale_s = 0.0
 
 
 def _reference_measurement(det: DetectionMeasurements) -> Measurement:
@@ -131,6 +136,7 @@ class TrackManager:
             depth_measurement=depth_m,
             raycast_measurement=ray_m,
             height_sample_m=det.height_sample_m,
+            joints=det.joints,
         )
 
     def _apply_measurements(self, track: _Track, det: DetectionMeasurements, events: List[TrackEvent]) -> List[str]:
@@ -243,11 +249,14 @@ class TrackManager:
                     track.last_det_conf = det.det_conf
                     track.last_src = "fused" if len(applied) == 2 else applied[0]
                     track.height_ema.update(det.height_sample_m)
+                    track.last_joints = det.joints
+                    track.joints_stale_s = 0.0
                     track.hits += 1
                     track.time_since_update_s = 0.0
 
             if not applied:
                 track.time_since_update_s += dt
+                track.joints_stale_s += dt
                 if track.state == "tentative":
                     del self._tracks[tid]
                     continue
@@ -275,6 +284,7 @@ class TrackManager:
             track.last_det_conf = det.det_conf
             track.last_src = "fused" if len(applied) == 2 else (applied[0] if applied else ref.src)
             track.height_ema.update(det.height_sample_m)
+            track.last_joints = det.joints
             track.hits = 1
             self._tracks[track.id] = track
 
@@ -309,6 +319,7 @@ class TrackManager:
         cov = track.kf.position_cov()
         cov_xy = (float(cov[0, 0]), float(cov[0, 1]), float(cov[1, 1]))
         src = track.last_src if track.time_since_update_s < 1e-9 else "predicted"
+        joints = track.last_joints if track.joints_stale_s <= self.cfg.joints.max_age_s else None
         return WorldTrackOutput(
             world_track_id=track.id,
             state=track.state,
@@ -320,4 +331,5 @@ class TrackManager:
             src=src,
             age_s=t_capture - track.created_t,
             bbox_px=track.last_bbox,
+            joints=joints,
         )
