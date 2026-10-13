@@ -22,3 +22,16 @@ models
 *.db3
 __pycache__/
 *.pyc
+
+# large / generated / machine-specific
+*.engine
+*.onnx
+*.pt
+*.bag
+data/logs/
+logs/
+__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
