@@ -60,6 +60,7 @@ def record_to_wire(record: Any) -> TrackWire:
         src=str(d["src"]),
         age_s=float(d["age_s"]),
         bbox=None if bbox is None else tuple(bbox),
+        person=d.get("person"),   # R1: absent when identity is off
     )
 
 
@@ -67,6 +68,9 @@ def record_to_wire(record: Any) -> TrackWire:
 class _TrackMemory:
     state: str
     last_seen_t: float
+    person_state: Optional[str] = None   # R1
+    person_id: Optional[int] = None
+    event_seq: int = 0
 
 
 class EventDeriver:
@@ -96,7 +100,8 @@ class EventDeriver:
                     events.append(event_message(event="track_confirmed", track_id=tr.id, t=t))
                 elif tr.state == "lost" and prev.state != "lost":
                     events.append(event_message(event="track_lost", track_id=tr.id, t=t))
-            self._known[tr.id] = _TrackMemory(state=tr.state, last_seen_t=t)
+            events.extend(self._identity_events(t, tr, prev))
+            self._known[tr.id] = _TrackMemory(state=tr.state, last_seen_t=t, **self._person_memory(tr, prev))
 
         # Any id we knew about last time but didn't see this frame has
         # been deleted by TrackManager -- that's track_end.
@@ -106,6 +111,39 @@ class EventDeriver:
             del self._known[tid]
 
         return events
+
+    @staticmethod
+    def _person_memory(tr: TrackWire, prev: Optional[_TrackMemory]) -> Dict[str, Any]:
+        person = tr.person or {}
+        return {"person_state": person.get("state"), "person_id": person.get("id"),
+                "event_seq": int(person.get("event_seq", prev.event_seq if prev else 0) or 0)}
+
+    @staticmethod
+    def _identity_events(t: float, tr: TrackWire, prev: Optional[_TrackMemory]) -> List[Dict[str, Any]]:
+        """R1: identity events derived from per-track transitions of (person.state, person.id), the same
+        way track events are derived from state transitions. Conflicts/swaps carry an explicit
+        person.event_seq + person.last_event marker and are emitted once per increment."""
+        person = tr.person
+        if not person:
+            return []
+        out: List[Dict[str, Any]] = []
+        pid, st = person.get("id"), person.get("state")
+        prev_pid = prev.person_id if prev else None
+        prev_st = prev.person_state if prev else None
+        detail = f"{person.get('label')} conf={float(person.get('conf') or 0.0):.2f}"
+        if pid is not None:
+            if prev_pid is not None and prev_pid != pid:
+                out.append(event_message(event="identity_merged", track_id=tr.id, t=t, detail=detail,
+                                         person_id=pid, from_person_id=prev_pid))
+            elif st == "matched" and prev_st != "matched":
+                out.append(event_message(event="identity_matched", track_id=tr.id, t=t, detail=detail, person_id=pid))
+            elif st == "new" and prev_st != "new":
+                out.append(event_message(event="identity_new", track_id=tr.id, t=t, detail=detail, person_id=pid))
+        seq = int(person.get("event_seq", 0) or 0)
+        last = person.get("last_event")
+        if seq > (prev.event_seq if prev else 0) and last in ("identity_conflict", "identity_swapped"):
+            out.append(event_message(event=last, track_id=tr.id, t=t, detail=detail, person_id=pid))
+        return out
 
     def reset(self) -> None:
         """Call when the frame changes (e.g. a Phase A -> Phase B

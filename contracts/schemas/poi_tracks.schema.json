@@ -124,6 +124,50 @@
             "items": {
               "type": "number"
             }
+          },
+          "person": {
+            "type": "object",
+            "required": [
+              "id",
+              "state"
+            ],
+            "properties": {
+              "id": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state": {
+                "enum": [
+                  "resolving",
+                  "matched",
+                  "new",
+                  "ambiguous"
+                ]
+              },
+              "conf": {
+                "type": "number"
+              },
+              "candidate": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "event_seq": {
+                "type": "integer"
+              },
+              "last_event": {
+                "type": "string"
+              }
+            }
           }
         }
       }

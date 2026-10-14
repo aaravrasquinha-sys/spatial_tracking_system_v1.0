@@ -135,7 +135,7 @@ function renderEvents() {
     const row = document.createElement("div");
     row.className = "event-row ev-" + ev.event;
     const time = new Date(ev.t * 1000).toLocaleTimeString([], { hour12: false });
-    row.innerHTML = '<span class="t">' + time + "</span>" + ev.event.replace("track_", "") + " #" + ev.id;
+    row.innerHTML = '<span class="t">' + time + "</span>" + ev.event.replace("track_", "").replace("identity_", "id:") + " #" + ev.id + (ev.person_id != null ? " \u2192 P" + ev.person_id : "");
     el.eventLog.appendChild(row);
   }
 }
@@ -155,7 +155,7 @@ function renderTrackList() {
     card.className = "track-card state-" + tr.state;
     card.innerHTML =
       '<div class="track-card-head">' +
-        '<span class="id">#' + tr.id + '</span>' +
+        '<span class="id">' + trackLabel(tr) + '</span>' +
         '<span class="state">' + tr.state + '</span>' +
       '</div>' +
       '<div class="track-card-body">' +
@@ -391,10 +391,23 @@ function drawEllipse(tr, fit, W, H, pxPerM) {
   ctx.restore();
 }
 
+// R1: identity labels/colours. `person` is optional on the wire: without it everything falls back to #id/state colour.
+function trackLabel(tr) {
+  const p = tr.person;
+  if (!p) return "#" + tr.id;
+  if (p.state === "resolving") return p.candidate != null && p.conf >= 0.6 ? "P" + p.candidate + "?" : "?";
+  return (p.label || (p.id != null ? "P" + p.id : "#" + tr.id)) + (p.state === "ambiguous" ? "?" : "");
+}
+function personColor(tr) {
+  const p = tr.person;
+  const pid = p ? (p.id != null ? p.id : p.candidate) : null;
+  return pid == null ? null : "hsl(" + ((pid * 137) % 360) + ", 70%, 62%)";   // colour by person, so a returning person keeps theirs
+}
+
 function drawTrack(tr, fit, W, H, pxPerM) {
   const p0 = worldToScreen(tr.p[0], tr.p[1], fit, W, H, pxPerM);
   const sx = p0[0], sy = p0[1];
-  const color = getVar(stateColorVar(tr.state));
+  const color = personColor(tr) || getVar(stateColorVar(tr.state));
   const r = 6 * dpr;
 
   ctx.save();
@@ -426,7 +439,7 @@ function drawTrack(tr, fit, W, H, pxPerM) {
   ctx.globalAlpha = Math.min(ctx.globalAlpha, 1) * 0.95;
   ctx.font = (11 * dpr) + 'px "IBM Plex Mono", monospace';
   ctx.fillStyle = getVar("--text-bright");
-  ctx.fillText("#" + tr.id, sx + r + 8 * dpr, sy + 4 * dpr);
+  ctx.fillText(trackLabel(tr), sx + r + 8 * dpr, sy + 4 * dpr);
   ctx.restore();
 }
 

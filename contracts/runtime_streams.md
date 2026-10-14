@@ -5,7 +5,7 @@
 | Message | Rate | Schema | Notes |
 |---|---|---|---|
 | `tracks` | per processed frame (~30 Hz) | `schemas/poi_tracks` | **always sent, even when `tracks` is empty**, so "nobody here" differs from "stream stalled" |
-| `event` | when it happens | `schemas/poi_event` | `track_start/confirmed/lost/end`, `id_switch`, `calib_suspect` |
+| `event` | when it happens | `schemas/poi_event` | `track_start/confirmed/lost/end`, `id_switch`, `calib_suspect`, `identity_new/matched/merged/conflict/swapped` (optional `person_id`, `from_person_id`) |
 | `health` | 1 Hz | `schemas/poi_health` | `calib` is `ok / suspect / missing`; `clock` is `synced / device` |
 | `scene` | once, HTTP | `schemas/poi_scene` | frame name, map_id, camera pose, intrinsics, asset URLs, walkable grid |
 | `ping`/`pong` | client-driven | -- | clock offset for the VR latency measurement |

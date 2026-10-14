@@ -51,7 +51,8 @@ TRACK_STATES = ("tentative", "confirmed", "coasting", "lost")
 # "predicted" if the Kalman filter coasted with no fresh measurement.
 TRACK_SOURCES = ("depth", "raycast", "fused", "predicted")
 
-EVENT_KINDS = ("track_start", "track_confirmed", "track_lost", "track_end", "calib_suspect", "id_switch")
+EVENT_KINDS = ("track_start", "track_confirmed", "track_lost", "track_end", "calib_suspect", "id_switch",
+               "identity_new", "identity_matched", "identity_merged", "identity_conflict", "identity_swapped")
 
 CALIB_STATES = ("ok", "suspect", "missing")
 CLOCK_STATES = ("synced", "device")
@@ -78,9 +79,11 @@ class TrackWire:
     src: str
     age_s: float
     bbox: Optional[Tuple[float, float, float, float]]
+    # R1: optional identity view {id, label, state, conf, candidate[, event_seq, last_event]}; omitted when None.
+    person: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "id": self.id,
             "state": self.state,
             "p": [_round(self.p[0], 4), _round(self.p[1], 4), _round(self.p[2], 4)],
@@ -92,6 +95,9 @@ class TrackWire:
             "age_s": _round(self.age_s, 2),
             "bbox": None if self.bbox is None else [_round(b, 1) for b in self.bbox],
         }
+        if self.person is not None:
+            d["person"] = dict(self.person)
+        return d
 
 
 def tracks_message(
@@ -118,11 +124,16 @@ def tracks_message(
     }
 
 
-def event_message(*, event: str, track_id: int, t: float, detail: Optional[str] = None) -> Dict[str, Any]:
+def event_message(*, event: str, track_id: int, t: float, detail: Optional[str] = None,
+                  person_id: Optional[int] = None, from_person_id: Optional[int] = None) -> Dict[str, Any]:
     assert event in EVENT_KINDS, f"unknown event kind {event!r}"
     msg: Dict[str, Any] = {"type": "event", "event": event, "id": track_id, "t": t}
     if detail is not None:
         msg["detail"] = detail
+    if person_id is not None:
+        msg["person_id"] = person_id
+    if from_person_id is not None:
+        msg["from_person_id"] = from_person_id
     return msg
 
 

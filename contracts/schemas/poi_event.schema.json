@@ -18,7 +18,12 @@
         "track_lost",
         "track_end",
         "calib_suspect",
-        "id_switch"
+        "id_switch",
+        "identity_new",
+        "identity_matched",
+        "identity_merged",
+        "identity_conflict",
+        "identity_swapped"
       ]
     },
     "id": {
@@ -29,6 +34,12 @@
     },
     "detail": {
       "type": "string"
+    },
+    "person_id": {
+      "type": "integer"
+    },
+    "from_person_id": {
+      "type": "integer"
     }
   }
 }

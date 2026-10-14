@@ -11,6 +11,7 @@ from sts.contracts import validate, validate_file
 EX = Path(__file__).resolve().parents[2] / "docs" / "schema_examples"
 GOLDEN = {"tracks_room_phase_b": "poi_tracks", "tracks_confirmed": "poi_tracks", "tracks_empty": "poi_tracks",
           "event_track_start": "poi_event", "event_track_end": "poi_event", "health_ok": "poi_health",
+          "tracks_identity": "poi_tracks", "event_identity_matched": "poi_event",
           "scene_phase_a": "poi_scene"}
 
 

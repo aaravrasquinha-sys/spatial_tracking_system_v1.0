@@ -1,0 +1,48 @@
+{
+  "type": "tracks",
+  "schema": "poi.v1",
+  "map_id": "a3f9c2e1b7d4",
+  "cam_id": "cam0",
+  "frame": "room",
+  "seq": 812,
+  "t_capture": 1790070000.0,
+  "t_publish": 1790070000.029,
+  "tracks": [
+    {
+      "id": 9,
+      "state": "confirmed",
+      "p": [
+        1.2,
+        0.4,
+        0.0
+      ],
+      "v": [
+        0.3,
+        0.0,
+        0.0
+      ],
+      "cov_xy": [
+        0.01,
+        0.0,
+        0.01
+      ],
+      "height": 1.72,
+      "conf": 0.9,
+      "src": "fused",
+      "age_s": 2.0,
+      "bbox": [
+        210.0,
+        80.0,
+        330.0,
+        410.0
+      ],
+      "person": {
+        "id": 1,
+        "label": "P1",
+        "state": "matched",
+        "conf": 0.983,
+        "candidate": null
+      }
+    }
+  ]
+}
