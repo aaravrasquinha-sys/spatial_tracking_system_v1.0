@@ -60,6 +60,8 @@ class M4Pipeline:
         # R1 identity layer (None = disabled = bit-for-bit the old behaviour). Duck-typed: needs
         # .step(frame, t, assignments, snapshot, events, outputs) -> {track_id: IdentityView}.
         self.identity_engine = identity_engine
+        if identity_engine is not None and hasattr(identity_engine, "attach_floor"):
+            identity_engine.attach_floor(self.floor_transform.R, self.floor_transform.t, distortion_coeffs)
         self.identity_errors: dict = {}
         self._identity_consecutive_failures = 0
         self.identity_disabled_reason: Optional[str] = None
