@@ -27,6 +27,13 @@ class Config:
     keyframe_trans_m: float = 0.15
     keyframe_rot_deg: float = 15.0
     keyframe_min_inliers: int = 60
+    # Batch-A (f2f odometry only): when the ONLY reason for a new keyframe is "too few inliers" (a weak /
+    # blurred view, e.g. mid-turn), wait at least this many tracked frames since the last keyframe before
+    # making another one. 0 = off (the original behaviour). A keyframe because the camera really moved
+    # (trans / rot) is never delayed, and neither is one with fewer than keyframe_gap_min_inliers inliers
+    # (too close to losing track to wait).
+    keyframe_min_gap_frames: int = 0
+    keyframe_gap_min_inliers: int = 30
     odom_reproj_px: float = 3.0
     odom_min_inliers: int = 15
 
@@ -499,6 +506,43 @@ class Config:
     local_reloc_max_rms_m: float = 0.03
     local_reloc_dist_thresh_m: float = 0.05  # RANSAC inlier distance for the 3D-3D solve
 
+    # --- Batch-B: ONE map, never split. When tracking is lost (and the quick check against the last few
+    # keyframes fails), the default behaviour starts a new reference with a guessed "bridge" link, which
+    # is what bends/splits long maps. With lost_pause_enabled the backend instead PAUSES mapping (no new
+    # keyframes, nothing added to the map) and keeps searching the WHOLE existing map for the place the
+    # camera is looking at; mapping resumes, in the same map, the moment it is found.
+    lost_pause_enabled: bool = False
+    lost_pause_search_every: int = 5     # run the whole-map search on every Nth lost frame (it is the costly part)
+    lost_pause_max_candidates: int = 8   # best-scoring keyframes (out of the whole map) that get a full geometric check
+    lost_pause_min_inliers: int = 40     # stricter than local_reloc_min_inliers: this search can see the whole map
+    lost_pause_timeout_s: float = 0.0    # 0 = never give up (single map). >0 = after this long, fall back to the old behaviour
+    # --- Batch-B: backend catch-up. If the frame queue to the backend holds at least this many frames,
+    # every second ordinary frame is skipped (keyframe frames are never skipped) until it drains to half.
+    # 0 = off.
+    backend_catchup_queue_frames: int = 0
+
+    # --- Batch-C: dense (point cloud) map quality. Every option is OFF by default = the previous behaviour.
+    # Which tracker keyframes are drawn into the dense map, and where:
+    #   "all"   = every tracker keyframe, at (its reference node's pose) x (the tracker's own small offset)
+    #   "nodes" = ONLY frames the backend itself made a keyframe on: their pose is an optimised graph pose
+    #             (the original repo's behaviour; fewer keyframes, flatter walls)
+    #   "near"  = like "all" but a keyframe whose offset from its reference node is bigger than the two
+    #             limits below is skipped (its position is the least trustworthy)
+    dense_pose_mode: str = "all"
+    dense_near_max_offset_m: float = 0.05
+    dense_near_max_offset_deg: float = 3.0
+    dense_max_depth_m: float = 0.0       # >0: drop dense points farther than this (D435 depth gets noisy past ~3 m)
+    dense_edge_rel: float = 0.0          # >0: drop depth-edge pixels (a neighbour 2 px away differs by more than
+                                         # this fraction of the depth, e.g. 0.04); removes flying pixels at edges
+    dense_fuse_max_frames: int = 0       # >0: average this many following tracked frames into each keyframe's depth
+                                         # before its points are sent (less noise on flat surfaces); 0 = off
+    dense_fuse_max_trans_m: float = 0.10     # only frames this close to the keyframe are averaged in
+    dense_fuse_max_rot_deg: float = 8.0
+    dense_export_min_neighbors: int = 0  # >0: at export drop dense voxels with fewer occupied neighbours (of 26)
+    # --- Batch-C: the camera itself (RealSense). Applied once when the camera is opened.
+    device_depth_preset: bool = False    # True: capture profile's visual preset + laser power + global time
+    device_depth_filters: str = "off"    # "off" | "spatial" | "spatial+temporal" depth post-processing
+
     # --- WP-T3: gravity-aligned world frame for trajectory export ---
     gravity_align_hold_s: float = 1.5  # seconds of IMU data from the
         # START of a run collected into PipelineResult.startup_imu_window,
@@ -569,6 +613,8 @@ CONFIG_CHOICES: dict = {
     "wm_evict_policy": ("oldest", "redundancy"),
     "bridge_mode": ("identity", "gyro"),
     "reloc_shortlist_backend": ("global_desc", "brute"),
+    "dense_pose_mode": ("all", "nodes", "near"),
+    "device_depth_filters": ("off", "spatial", "spatial+temporal"),
 }
 
 _TRUE = {"1", "true", "yes", "on", "y", "t"}

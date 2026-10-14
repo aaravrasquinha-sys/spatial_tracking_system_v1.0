@@ -26,6 +26,8 @@ class MappingStatusAggregator:
     n_speed_over_limit: int = 0       # frames above the protocol's ~0.5 m/s guidance
     n_rot_over_limit: int = 0         # frames above the protocol's ~30 deg/s guidance
     fused_depth_valid_frac_last: Optional[float] = None
+    n_frames_dropped: int = 0         # frames the tracker could not hand to the backend (queue full)
+    n_points_dropped: int = 0         # keyframe point clouds the tracker could not hand to dense
     _t_start: float = field(default_factory=time.time)
 
     SPEED_LIMIT_MPS: float = 0.5
@@ -50,6 +52,10 @@ class MappingStatusAggregator:
         if snap.fused_depth_valid_frac is not None:
             self.fused_depth_valid_frac_last = snap.fused_depth_valid_frac
 
+    def add_drop(self, frames: int = 0, points: int = 0) -> None:
+        self.n_frames_dropped += frames
+        self.n_points_dropped += points
+
     def snapshot(self, layers=None) -> dict:
         """layers: an optional pyslam.mapping.layers.LayerGrid, folded
         in as coverage stats if given -- kept optional so this module
@@ -68,6 +74,8 @@ class MappingStatusAggregator:
             "n_speed_over_limit": self.n_speed_over_limit,
             "n_rot_over_limit": self.n_rot_over_limit,
             "fused_depth_valid_frac_last": self.fused_depth_valid_frac_last,
+            "n_frames_dropped": self.n_frames_dropped,
+            "n_points_dropped": self.n_points_dropped,
         }
         if layers is not None:
             out["coverage"] = layers.coverage_stats()

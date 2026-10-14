@@ -168,6 +168,39 @@ def try_local_relocalization(query_sig: Signature, candidate_nodes: list[Node], 
     return None
 
 
+def try_global_relocalization(query_sig: Signature, memory, cfg: Config, max_candidates: int = 8,
+                              min_inliers: int = 40, min_inlier_ratio: float = 0.35,
+                              max_rms_m: float = 0.03, dist_thresh_m: float = 0.05,
+                              min_score: float = 0.01, chunk: int = 300) -> Optional[LocalRelocResult]:
+    """Batch-B: relocalize against the WHOLE existing map (every keyframe the memory knows, resident or in
+    long-term storage), not only the last few. Step 1 ranks every keyframe by one cheap batched descriptor
+    match (the same scorer loop-closure retrieval uses, done in chunks to bound memory). Step 2 gives only
+    the best `max_candidates` the full depth-based geometric check of try_local_relocalization (inlier,
+    ratio and RMS gates), so a look-alike place is rejected by geometry, not accepted on appearance."""
+    from pyslam.vpr.raw_match import score_candidates
+    ids = list(dict.fromkeys(list(memory.all_node_ids()) + list(memory.ltm_ids_expanded())))
+    nodes = []
+    for nid in ids:
+        try:
+            n = memory.get(nid)
+        except KeyError:
+            continue
+        if n.sig.desc.shape[0] > 0 and bool(n.sig.valid.any()):
+            nodes.append(n)
+    if not nodes or query_sig.desc.shape[0] == 0:
+        return None
+    scores = np.zeros(len(nodes), dtype=np.float64)
+    for i in range(0, len(nodes), max(int(chunk), 1)):
+        scores[i:i + chunk] = score_candidates(query_sig, nodes[i:i + chunk])
+    order = np.argsort(-scores)
+    top = [nodes[int(i)] for i in order[:max_candidates] if scores[int(i)] >= min_score]
+    if not top:
+        return None
+    return try_local_relocalization(query_sig, top, cfg, min_inliers=min_inliers,
+                                    min_inlier_ratio=min_inlier_ratio, max_rms_m=max_rms_m,
+                                    dist_thresh_m=dist_thresh_m)
+
+
 def build_local_reloc_link(a_node_id: int, b_query_node: Node, result: LocalRelocResult) -> Link:
     """Builds the graph Link once the caller has decided to keep a
     successful local_reloc as the new keyframe's anchor (mirrors the

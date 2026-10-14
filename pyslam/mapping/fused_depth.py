@@ -106,10 +106,91 @@ class KeyframeFusedDepth:
         self.weight[accept] = new_w
         self.n_obs[accept] += 1
 
+    def fuse_samples(self, ys: np.ndarray, xs: np.ndarray, z: np.ndarray) -> int:
+        """Batch-C: same weighted running mean + outlier rejection as fuse_frame, but for a list of pixels
+        (ys, xs) with depths z (metres) already expressed in THIS keyframe's frame. Returns how many were
+        accepted."""
+        if ys.size == 0:
+            return 0
+        sigma = depth_sigma(z, self.p)
+        w_new = 1.0 / (sigma ** 2)
+        w_old = self.weight[ys, xs]
+        m_old = self.mean[ys, xs]
+        has_prior = w_old > self.p.min_weight_for_valid
+        running_sigma = np.zeros_like(m_old)
+        running_sigma[has_prior] = 1.0 / np.sqrt(w_old[has_prior])
+        disagree = has_prior & (np.abs(z - m_old) > self.p.outlier_sigma_mult * running_sigma)
+        ok = ~disagree
+        ys, xs, z, w_new, w_old, m_old = ys[ok], xs[ok], z[ok], w_new[ok], w_old[ok], m_old[ok]
+        new_w = w_old + w_new
+        self.mean[ys, xs] = (m_old * w_old + z * w_new) / np.maximum(new_w, 1e-12)
+        self.weight[ys, xs] = new_w
+        self.n_obs[ys, xs] += 1
+        return int(ys.size)
+
+    def fuse_warped(self, depth_cur_m: np.ndarray, K: np.ndarray, T_ref_cur: np.ndarray, stride: int = 4,
+                    tol_abs_m: float = 0.02, tol_rel: float = 0.02) -> int:
+        """Batch-C: fold ANOTHER tracked frame's depth into this keyframe. For every grid pixel this keyframe
+        already has a depth for, find where that 3D point lands in the other frame (T_ref_cur = ref<-cur, the
+        odometry's own relative pose), read the other frame's depth there, and accept it only if it agrees
+        with the predicted depth (so occlusions and moving things are rejected); then re-express the measured
+        point in this keyframe's frame and fuse its z. Only the stride grid is touched (cheap, numpy)."""
+        fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+        cache = getattr(self, "_warp_cache", None)      # the grid + its 3D points are the same for every frame
+        if cache is None or cache[0] != stride:
+            valid = self.is_valid()
+            ys, xs = np.where(valid[::stride, ::stride])
+            ys, xs = ys * stride, xs * stride
+            z_ref = self.mean[ys, xs]
+            P_ref = np.stack([(xs - cx) / fx * z_ref, (ys - cy) / fy * z_ref, z_ref], axis=1)
+            cache = self._warp_cache = (stride, ys, xs, P_ref)
+        _, ys, xs, P_ref = cache
+        if ys.size == 0:
+            return 0
+        R, t = T_ref_cur[:3, :3], T_ref_cur[:3, 3]
+        P_cur = (P_ref - t) @ R                    # = R^T (P_ref - t)  : ref -> cur
+        zc = P_cur[:, 2]
+        front = zc > 0.1
+        u = np.zeros(zc.shape, dtype=np.int64)
+        v = np.zeros(zc.shape, dtype=np.int64)
+        u[front] = np.rint(P_cur[front, 0] / zc[front] * fx + cx).astype(np.int64)
+        v[front] = np.rint(P_cur[front, 1] / zc[front] * fy + cy).astype(np.int64)
+        H, W = depth_cur_m.shape
+        inb = front & (u >= 0) & (u < W) & (v >= 0) & (v < H)
+        if not np.any(inb):
+            return 0
+        ys, xs, P_cur, zc, u, v = ys[inb], xs[inb], P_cur[inb], zc[inb], u[inb], v[inb]
+        d = depth_cur_m[v, u]
+        agree = np.isfinite(d) & (d > 0) & (np.abs(d - zc) < tol_abs_m + tol_rel * zc)
+        if not np.any(agree):
+            return 0
+        ys, xs, u, v, d = ys[agree], xs[agree], u[agree], v[agree], d[agree]
+        Q_cur = np.stack([(u - cx) / fx * d, (v - cy) / fy * d, d], axis=1)
+        z_new = (Q_cur @ R.T + t)[:, 2]            # the measured point, expressed in this keyframe
+        good = z_new > 0.1
+        return self.fuse_samples(ys[good], xs[good], z_new[good])
+
     def is_valid(self) -> np.ndarray:
         return self.weight >= self.p.min_weight_for_valid
 
-    def get_points(self, K: np.ndarray, stride: int = 1) -> tuple[np.ndarray, np.ndarray]:
+    def edge_mask(self, rel: float, step: int = 2) -> np.ndarray:
+        """Batch-C: True where a valid pixel sits on a depth discontinuity -- some neighbour `step` pixels away
+        (up/down/left/right) is valid and differs by more than rel * depth. These are the flying pixels that
+        smear around object edges. Invalid neighbours are ignored."""
+        z = self.mean * self.is_valid()
+        edge = np.zeros(z.shape, dtype=bool)
+        tol = rel * z
+        for dy, dx in ((step, 0), (0, step)):
+            a = z[dy:, dx:]
+            b = z[:z.shape[0] - dy, :z.shape[1] - dx]
+            both = (a > 0) & (b > 0)
+            diff = both & (np.abs(a - b) > np.maximum(tol[dy:, dx:], tol[:z.shape[0] - dy, :z.shape[1] - dx]))
+            edge[dy:, dx:] |= diff
+            edge[:z.shape[0] - dy, :z.shape[1] - dx] |= diff
+        return edge
+
+    def get_points(self, K: np.ndarray, stride: int = 1, max_depth_m: float = 0.0,
+                   edge_rel: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
         """Returns (pts (N,3) float64 in this keyframe's camera frame,
         pixel_yx (N,2) int) for every valid pixel on the stride grid.
         No colour -- callers needing colour (dense export) re-sample
@@ -118,6 +199,10 @@ class KeyframeFusedDepth:
         resident vs evicted to the imagery cache."""
         fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
         valid = self.is_valid()
+        if max_depth_m > 0.0:                      # Batch-C (default off = unchanged)
+            valid = valid & (self.mean <= max_depth_m)
+        if edge_rel > 0.0:
+            valid = valid & ~self.edge_mask(edge_rel)
         ys, xs = np.where(valid[::stride, ::stride])
         ys, xs = ys * stride, xs * stride
         if ys.size == 0:

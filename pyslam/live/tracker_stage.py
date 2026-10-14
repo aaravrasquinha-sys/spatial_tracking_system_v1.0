@@ -36,6 +36,9 @@ from pyslam.frontend.features import extract_signature, make_orb
 from pyslam.frontend.odometry import VisualOdometry
 from pyslam.frontend.icp_fallback import point_to_plane_icp
 from pyslam.mapping.fused_depth import KeyframeFusedDepth, FusionParams
+from pyslam.core.log import get_logger
+
+log = get_logger("live.tracker_stage")
 
 
 @dataclass
@@ -55,6 +58,17 @@ class TrackerQaSnapshot:
     fused_depth_valid_frac: Optional[float]
 
 
+@dataclass
+class FinishedKeyframe:
+    """Batch-C: a tracker keyframe whose fused depth is complete and ready to be turned into dense points.
+    With dense_fuse_max_frames=0 this is ready the moment the keyframe is made (the previous behaviour);
+    otherwise it is ready after that many more frames were averaged in, or when the next keyframe starts."""
+    frame_id: int
+    K: np.ndarray
+    rgb: np.ndarray
+    fused: KeyframeFusedDepth
+
+
 class TrackerStage:
     """The tracker's per-frame logic, factored out of any particular
     I/O (camera vs bag vs synthetic, in-process vs subprocess) so it's
@@ -69,10 +83,61 @@ class TrackerStage:
         self.orb = make_orb(cfg)
         self.odometry = VisualOdometry(cfg)
         self._last_two: list[tuple] = []  # (t, xyz) for constant-velocity prediction
+        # Batch-1 (N9): last two WORLD poses of successfully tracked frames, used ONLY for the
+        # speed / rotation-rate QA numbers. _last_two above is relative to the current reference
+        # keyframe, so a speed taken from it jumps at every keyframe switch; world poses do not.
+        self._pose_hist: list[tuple] = []  # (t, 4x4 world<-cam)
         self._cur_fused: Optional[KeyframeFusedDepth] = None
         self._fusion_params = FusionParams(depth_fx_px=cfg.__dict__.get("depth_stereo_fx_px", 390.0),
                                             baseline_m=0.0499)
         self.n_icp_fallback_used = 0
+        # Batch-1b: once this odometry is LOST it only ever recovers if the camera comes back to look at
+        # its OLD reference keyframe (the backend Pipeline restarts with force_new_keyframe(); this
+        # tracker never did). So ONE bad second froze the keyframe count for the rest of the run.
+        self._lost_run = 0
+        self.n_reseeds = 0
+        # Batch-C: the keyframe currently being built (frame id, colour image, K, how many extra frames were
+        # averaged in, whether it was already handed out) and the list of finished ones waiting to be taken.
+        self._cur_kf: Optional[dict] = None
+        self._finished: list = []
+
+    # ------------------------------------------------------------------ Batch-C: keyframe hand-out
+    def _emit_current_keyframe(self) -> None:
+        kf = self._cur_kf
+        if kf is None or kf["emitted"] or self._cur_fused is None:
+            return
+        kf["emitted"] = True
+        self._finished.append(FinishedKeyframe(frame_id=kf["frame_id"], K=kf["K"], rgb=kf["rgb"],
+                                               fused=self._cur_fused))
+
+    def _close_current_keyframe(self) -> None:
+        """The reference keyframe is about to change (or the stream ends): make sure it was handed out."""
+        self._emit_current_keyframe()
+
+    def _fuse_extra_frame(self, res, used_icp: bool, depth_m: np.ndarray, frame: Frame) -> None:
+        """Average this tracked frame's depth into the current keyframe (dense_fuse_max_frames > 0). Only
+        frames that were really tracked (not an ICP rescue) and are close to the keyframe are used."""
+        max_n = int(getattr(self.cfg, "dense_fuse_max_frames", 0))
+        kf = self._cur_kf
+        if max_n <= 0 or kf is None or kf["emitted"] or self._cur_fused is None:
+            return
+        if self.odometry.status == "OK" and res.n_inliers > 0 and not used_icp:
+            xi = lie.se3_log(res.T_rel)
+            if (np.linalg.norm(xi[:3]) <= float(self.cfg.dense_fuse_max_trans_m)
+                    and np.degrees(np.linalg.norm(xi[3:])) <= float(self.cfg.dense_fuse_max_rot_deg)):
+                self._cur_fused.fuse_warped(depth_m, kf["K"], res.T_rel)
+                kf["n_extra"] += 1
+        if kf["n_extra"] >= max_n or self.odometry.status != "OK":
+            self._emit_current_keyframe()
+
+    def take_finished_keyframes(self) -> list:
+        out, self._finished = self._finished, []
+        return out
+
+    def flush(self) -> list:
+        """End of stream: hand out the keyframe still being built, then return everything waiting."""
+        self._close_current_keyframe()
+        return self.take_finished_keyframes()
 
     def _predicted_T_ref_query(self) -> Optional[np.ndarray]:
         if len(self._last_two) < 2:
@@ -137,7 +202,10 @@ class TrackerStage:
                     # quietly shipped as settled.
                     icp_res = point_to_plane_icp(src_pts, dst_pts, dst_normals, T_init,
                                                   corr_dist_m=0.2, min_correspondences=50)
-                    if icp_res is not None and icp_res.degenerate_directions < 6:
+                    # Batch-1 (N10): was `< 6`, which accepts a solution where 5 of 6 directions are
+                    # unconstrained (a single flat wall leaves 3). Allow at most 1 free direction.
+                    max_degenerate = int(getattr(self.cfg, "icp_fallback_max_degenerate", 1))
+                    if icp_res is not None and icp_res.degenerate_directions <= max_degenerate:
                         used_icp = True
                         icp_degenerate = icp_res.degenerate_directions
                         self.n_icp_fallback_used += 1
@@ -149,20 +217,49 @@ class TrackerStage:
                         self.odometry.cur_pose = self.odometry.ref_pose @ icp_res.T_ref_cur
                         self.odometry._lost_streak = 0
 
+        # Batch-1b: re-seed. After `reseed_after` consecutive LOST frames (ICP did not rescue them), start a
+        # NEW reference keyframe at the current frame, exactly like Pipeline does after a LOST. The map does
+        # not depend on this tracker's own pose: dense uses the BACKEND's poses for tracker keyframes, and
+        # a keyframe the backend could not place is simply skipped there. So this only restores the flow of
+        # keyframes + their point clouds.
+        self._lost_run = self._lost_run + 1 if self.odometry.status == "LOST" else 0
+        reseed_after = int(getattr(self.cfg, "tracker_reseed_after_lost", 6))
+        if self._lost_run >= reseed_after and int(sig.valid.sum()) >= 80:
+            self.odometry.force_new_keyframe(sig)
+            self._last_two.clear()          # velocity prediction belonged to the old reference
+            self._pose_hist.clear()         # and a pose jump must not show up as a fake speed
+            self._lost_run = 0
+            self.n_reseeds += 1
+            log.warning(f"Tracker was LOST for {reseed_after}+ frames -- restarted a reference keyframe at "
+                        f"frame {frame.frame_id} (re-seed #{self.n_reseeds}).")
+
         if self.odometry.status == "OK" and res.n_inliers > 0:
             self._last_two.append((frame.t, res.T_rel[:3, 3].copy()))
             if len(self._last_two) > 2:
                 self._last_two.pop(0)
 
+        # Batch-1 (N9): speed AND rotation rate from consecutive WORLD poses (rot_rate was never
+        # computed before, so the ">30 deg/s" warning could never fire).
         speed = rot_rate = None
-        if len(self._last_two) == 2:
-            (t0, x0), (t1, x1) = self._last_two
+        tracked_now = self.odometry.status == "OK" and res.n_inliers > 0
+        if tracked_now:
+            self._pose_hist.append((frame.t, self.odometry.cur_pose.copy()))
+            if len(self._pose_hist) > 2:
+                self._pose_hist.pop(0)
+        if tracked_now and len(self._pose_hist) == 2:   # only on frames that were really tracked
+            (t0, P0), (t1, P1) = self._pose_hist
             dt = t1 - t0
-            if dt > 1e-6:
-                speed = float(np.linalg.norm(x1 - x0) / dt)
+            if 1e-6 < dt < 0.5:      # a gap > 0.5 s (dropped frames / LOST) says nothing about speed
+                speed = float(np.linalg.norm(P1[:3, 3] - P0[:3, 3]) / dt)
+                R_rel = P0[:3, :3].T @ P1[:3, :3]
+                cos_a = float(np.clip((np.trace(R_rel) - 1.0) / 2.0, -1.0, 1.0))
+                rot_rate = float(np.degrees(np.arccos(cos_a)) / dt)
 
         if self.odometry.last_keyframe_created:
+            self._close_current_keyframe()          # Batch-C: hand out the previous keyframe if not yet done
             self._cur_fused = KeyframeFusedDepth(frame.intr.height, frame.intr.width, self._fusion_params)
+            self._cur_kf = {"frame_id": frame.frame_id, "K": frame.intr.K(), "rgb": frame.rgb,
+                            "n_extra": 0, "emitted": False}
 
         if self._cur_fused is not None:
             depth_m = frame.depth.astype(np.float64) * frame.intr.depth_scale
@@ -180,6 +277,10 @@ class TrackerStage:
             # headroom.
             if self.odometry.last_keyframe_created:
                 self._cur_fused.fuse_frame(depth_m)
+                if int(getattr(self.cfg, "dense_fuse_max_frames", 0)) <= 0:
+                    self._emit_current_keyframe()      # previous behaviour: points are ready immediately
+            else:
+                self._fuse_extra_frame(res, used_icp, depth_m, frame)
 
         return TrackerQaSnapshot(
             t=frame.t, frame_id=frame.frame_id, odom_status=self.odometry.status,

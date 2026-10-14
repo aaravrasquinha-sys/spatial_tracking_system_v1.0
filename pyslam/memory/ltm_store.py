@@ -43,7 +43,10 @@ def _strip_for_ltm(node: Node) -> Node:
 class LtmStore:
     def __init__(self, path: str):
         self.path = path
-        self.conn = sqlite3.connect(path, isolation_level=None)  # autocommit;
+        # check_same_thread=False: in live mapping the Pipeline (and this store) is built in the backend's main
+        # thread but used from its pipeline thread; sqlite refused that and the FIRST keyframe moved to
+        # long-term memory killed the whole backend thread. Access is never concurrent (one thread at a time).
+        self.conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)  # autocommit;
             # each statement is its own transaction -- see module docstring
         self.conn.execute("PRAGMA journal_mode=WAL;")
         self.conn.execute("PRAGMA synchronous=NORMAL;")

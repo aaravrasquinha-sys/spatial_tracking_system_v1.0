@@ -54,18 +54,21 @@ class PyslamLiveMapBuilder:
     holes (re-fuse) or to rebuild it with another pipeline later (slot map_builder, reserved names)."""
 
     def build(self, site: SiteConfig, cam_id: Optional[str], extra_args: Optional[List[str]] = None,
-              record: bool = True, bag_name: Optional[str] = None) -> Command:
+              record: bool = True, bag_name: Optional[str] = None, out_dir: Optional[Path] = None,
+              overrides: Optional[Dict[str, object]] = None) -> Command:
         cam = site.camera(cam_id)
-        out = site.map_dir()
+        out = Path(out_dir) if out_dir else site.map_dir()
         argv = [sys.executable, "run_live_map.py", "--realsense", "--out", str(out),
                 "--capture-profile", str(site.capture_profile_path()),
                 "--imu-mode", "callback"]          # 'polling' is rejected by RealSenseSource (RUNBOOK_ANCHOR Part 0)
         if cam.serial:
             argv += ["--serial", cam.serial]
         if record:
-            bag = site.recordings_dir() / (bag_name or f"map_{time.strftime('%Y%m%d_%H%M%S')}.bag")
+            bag = site.recordings_dir() / (bag_name or f"{out.name}.db3")      # the bag carries the map's name
             bag.parent.mkdir(parents=True, exist_ok=True)
             argv += ["--record", str(bag)]
+        for k, v in (overrides or {}).items():                  # before `extra`, so --config-override typed by hand wins
+            argv += ["--config-override", f"{k}={str(v).lower() if isinstance(v, bool) else v}"]
         extra = [a for a in (extra_args or []) if a != "--"]
         if any(a == "lockstep" for a in extra) and not _legacy_defines("run_live_map.py", "_lock_and_write"):
             raise SiteError(

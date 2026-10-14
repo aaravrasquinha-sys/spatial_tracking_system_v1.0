@@ -205,6 +205,8 @@ class RealSenseSource:
             playback.set_real_time(False)  # replay as fast as we can consume, drop nothing
 
         self.align = rs.align(rs.stream.color)
+        self._rs_profile = profile          # Batch-C: kept so apply_capture_profile() can reach the sensors
+        self._depth_filters: list = []      # Batch-C: post-processing filters applied to every depth frame
 
         # WP-T3: the real accel-to-color rotation, queried from the
         # device's own extrinsics rather than assumed. pipeline.py's
@@ -285,6 +287,49 @@ class RealSenseSource:
         self._gyro_buf: list[tuple[float, np.ndarray]] = []
         self._prev_t: Optional[float] = None
         self._frame_id = 0
+
+    def apply_capture_profile(self, profile, apply_preset: bool = True, filters: str = "off") -> None:
+        """Batch-C: apply the shared capture profile to this OPEN camera. apply_preset sets the depth visual preset,
+        laser power and global time (capture_profile.apply_to_realsense). filters = "off" | "spatial" |
+        "spatial+temporal" turns on depth post-processing for every frame from here on. Every step is
+        best-effort: a failure is logged and the camera keeps running with what it had."""
+        rs = self._rs
+        try:
+            device = self._rs_profile.get_device()
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"apply_capture_profile: no device handle ({e}); camera left on its defaults.")
+            return
+        if apply_preset:
+            try:
+                from pyslam.live.capture_profile import apply_to_realsense
+                depth_sensor = device.first_depth_sensor()
+                try:
+                    color_sensor = device.first_color_sensor()
+                except Exception:
+                    color_sensor = None
+                apply_to_realsense(profile, rs, depth_sensor, color_sensor, log=log)
+                log.info(f"Camera capture profile applied (preset={profile.visual_preset}, "
+                         f"laser_power={profile.laser_power}).")
+            except Exception as e:  # noqa: BLE001
+                log.warning(f"Could not apply the capture profile to the camera: {e}")
+        if filters != "off":
+            try:
+                chain = []
+                spatial = rs.spatial_filter()
+                spatial.set_option(rs.option.filter_magnitude, profile.spatial_filter_magnitude)
+                spatial.set_option(rs.option.filter_smooth_alpha, profile.spatial_filter_smooth_alpha)
+                spatial.set_option(rs.option.filter_smooth_delta, profile.spatial_filter_smooth_delta)
+                chain.append(spatial)
+                if filters == "spatial+temporal":
+                    temporal = rs.temporal_filter()
+                    temporal.set_option(rs.option.filter_smooth_alpha, profile.temporal_filter_smooth_alpha)
+                    temporal.set_option(rs.option.filter_smooth_delta, profile.temporal_filter_smooth_delta)
+                    chain.append(temporal)
+                self._depth_filters = chain
+                log.info(f"Depth post-processing on: {filters}.")
+            except Exception as e:  # noqa: BLE001
+                self._depth_filters = []
+                log.warning(f"Could not set up the depth filters ({e}); running without them.")
 
     def intrinsics(self) -> Intrinsics:
         return self.intr
@@ -422,6 +467,15 @@ class RealSenseSource:
             depth_frame = aligned.get_depth_frame()
             if not color_frame or not depth_frame:
                 continue
+            if self._depth_filters:                      # Batch-C: optional depth post-processing
+                try:
+                    df = depth_frame
+                    for flt in self._depth_filters:
+                        df = flt.process(df)
+                    depth_frame = df
+                except Exception as e:  # noqa: BLE001
+                    log.warning(f"Depth filters failed ({e}); switching them off for the rest of the run.")
+                    self._depth_filters = []
             t = color_frame.get_timestamp() / 1000.0
 
             raw = np.asanyarray(color_frame.get_data())

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import time
 from dataclasses import dataclass, field, asdict, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -39,10 +41,21 @@ class CameraSpec:
     masks_path: Optional[str] = None        # ROI masks json (M3); null = none
 
 
+# Config overrides handed to every `sts map` run (run_live_map.py --config-override KEY=VALUE). Used when
+# site.json map.overrides is null; set map.overrides to {} to run with the stock Config instead.
+# Every value here was checked on the synthetic scenes (see docs/OPEN_ITEMS.md) -- NOT yet on the D435i.
+# gravity_prior_enabled is deliberately NOT here until the live IMU->camera rotation is passed to the
+# backend: with a wrong rotation it makes the map tilt worse (measured), not better.
+RECOMMENDED_MAP_OVERRIDES: Dict[str, Any] = {"proximity_enabled": True}   # +loop closures from nearby poses: ATE 1.49 -> 1.26 cm (1 scene)
+
+
 @dataclass
 class MapSpec:
-    dir: Optional[str] = None               # default: <data>/maps/<site>
+    dir: Optional[str] = None               # PIN: an explicit map folder. Wins over `current`. null = follow `current`
     map_id: Optional[str] = None            # filled in by `sts map-lock` / `sts anchor accept`
+    current: Optional[str] = None           # the ACTIVE map: folder name under <data>/maps/. `sts map` sets it to the
+                                            # newest map, `sts map-use` changes it. null = old single folder maps/<site>
+    overrides: Optional[Dict[str, Any]] = None   # Config overrides for `sts map`; null = RECOMMENDED_MAP_OVERRIDES, {} = none
 
 
 @dataclass
@@ -117,8 +130,62 @@ class SiteConfig:
     def data_root(self) -> Path:
         return resolve(self.data_dir)
 
+    def maps_root(self) -> Path:
+        return self.data_root() / "maps"
+
     def map_dir(self) -> Path:
-        return resolve(self.map.dir) if self.map.dir else self.data_root() / "maps" / self.site
+        """The ACTIVE map. Everything downstream (anchor, accept, run, check, doctor) goes through here, so
+        switching the active map switches the whole chain."""
+        if self.map.dir:
+            return resolve(self.map.dir)
+        if self.map.current:
+            return self.maps_root() / self.map.current
+        return self.maps_root() / self.site          # old layout: one folder per site
+
+    def map_overrides(self) -> Dict[str, Any]:
+        return dict(RECOMMENDED_MAP_OVERRIDES if self.map.overrides is None else self.map.overrides)
+
+    def new_map_name(self, now: Optional[float] = None) -> str:
+        stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(now))
+        name, n = f"{self.site}_{stamp}", 2
+        while (self.maps_root() / name).exists():
+            name, n = f"{self.site}_{stamp}_{n}", n + 1
+        return name
+
+    def list_maps(self) -> List[Dict[str, Any]]:
+        """Every map folder of this site (old single folder + timestamped ones), oldest first."""
+        pat = re.compile(rf"^{re.escape(self.site)}(_\d{{8}}_\d{{6}}(_\d+)?)?$")
+        root, active, out = self.maps_root(), self.map_dir().resolve(), []
+        if root.is_dir():
+            for d in sorted(root.iterdir()):
+                if not d.is_dir() or not pat.match(d.name):
+                    continue
+                manifest, map_id = d / "manifest.json", None
+                if manifest.exists():
+                    try:
+                        map_id = json.loads(manifest.read_text()).get("map_id")
+                    except (OSError, ValueError):
+                        pass
+                out.append({"name": d.name, "path": str(d), "has_points": (d / "dense" / "points.ply").exists(),
+                            "locked": manifest.exists(), "map_id": map_id,
+                            "created": time.strftime("%Y-%m-%d %H:%M", time.localtime(d.stat().st_mtime)),
+                            "active": d.resolve() == active})
+        return out
+
+    def find_map(self, name: str) -> Dict[str, Any]:
+        """'latest' = the newest folder that actually has dense/points.ply; otherwise an exact name or a unique prefix."""
+        maps = self.list_maps()
+        if name == "latest":
+            ok = [m for m in maps if m["has_points"]]
+            if not ok:
+                raise SiteError(f"no finished map (dense/points.ply) under {self.maps_root()}")
+            return ok[-1]
+        exact = [m for m in maps if m["name"] == name]
+        hits = exact or [m for m in maps if m["name"].startswith(name)]
+        if len(hits) != 1:
+            have = ", ".join(m["name"] for m in maps) or "none"
+            raise SiteError(f"{'no map' if not hits else 'several maps'} match {name!r} (have: {have})")
+        return hits[0]
 
     def anchor_base(self) -> Path:
         return resolve(self.anchor.dir) if self.anchor.dir else self.data_root() / "anchors" / self.site
@@ -228,6 +295,10 @@ class SiteConfig:
             raise SiteError(f"duplicate cam_id in cameras: {ids}")
         if not self.cameras:
             raise SiteError("cameras must list at least one camera")
+        if self.map.current and any(ch in self.map.current for ch in "/\\"):
+            raise SiteError(f"map.current {self.map.current!r} must be a folder NAME under {self.data_dir}/maps, not a path")
+        if self.map.overrides is not None and not isinstance(self.map.overrides, dict):
+            raise SiteError("map.overrides must be an object like {\"local_reloc_enabled\": true} (or null)")
         if self.localization.phase not in ("A", "B"):
             raise SiteError(f"localization.phase must be 'A' or 'B', got {self.localization.phase!r}")
         if self.watchdog.on_suspect not in ("suppress", "flag"):

@@ -40,6 +40,7 @@ class VisualOdometry:
         self._lost_streak = 0
         self.status = "OK"
         self._initialised = False
+        self._frames_since_kf = 0     # Batch-A: tracked frames since the last keyframe (keyframe_min_gap_frames)
 
     # ------------------------------------------------------------------
     def _match(self, sig_query: Signature, sig_train: Signature, T_train_query_predicted=None, K=None):
@@ -170,6 +171,7 @@ class VisualOdometry:
             self.last_keyframe_link_T = None
             self.status = "OK"
             self._lost_streak = 0
+            self._frames_since_kf = 0
             return OdomResult(pose=self.cur_pose.copy(), T_rel=np.eye(4),
                                info=np.eye(6) * 1e6, n_inliers=0, status="OK")
 
@@ -235,7 +237,16 @@ class VisualOdometry:
                                            ("rot", rot_deg > self.cfg.keyframe_rot_deg),
                                            ("inliers", n_inliers < self.cfg.keyframe_min_inliers)) if hit]
         need_new_kf = bool(reasons)
+        self._frames_since_kf += 1
+        # Batch-A: a keyframe made ONLY because the view is weak (few inliers) is delayed for a few frames;
+        # a weak view stays weak, so without this every frame of a blurry turn became a keyframe (15 per
+        # second in the field log), flooding the backend. Real motion and near-loss are never delayed.
+        gap = int(self.cfg.keyframe_min_gap_frames)
+        if (need_new_kf and gap > 0 and reasons == ["inliers"] and self._frames_since_kf < gap
+                and n_inliers >= int(self.cfg.keyframe_gap_min_inliers)):
+            need_new_kf = False
         if need_new_kf:
+            self._frames_since_kf = 0
             self.last_keyframe_reason = "+".join(reasons)  # WP-L3 (telemetry only)
             self.last_keyframe_created = True
             self.last_keyframe_signature = sig
@@ -262,6 +273,7 @@ class VisualOdometry:
         self.ref_sig = sig
         self.ref_pose = self.cur_pose.copy()
         self._lost_streak = 0
+        self._frames_since_kf = 0
         self.status = "OK"
         self.last_keyframe_created = True
         self.last_keyframe_signature = sig

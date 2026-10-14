@@ -1,7 +1,11 @@
 """python -m sts <command>  -- the operator interface. Run from anywhere; paths resolve from the repo root.
 
   init | doctor | configs | check | slots | provenance | boundaries | contracts
-  map | map-lock | anchor <verb> | accept | engine | run | replay | test | retention
+  map | maps | map-use | map-lock | anchor <verb> | accept | engine | run | replay | test | retention
+
+Every `sts map` writes a NEW folder <data>/maps/<site>_<timestamp>/ and makes it the active map
+(site.json map.current). anchor / accept / run / check / doctor all use the active map.
+`sts maps` lists them, `sts map-use NAME|latest` switches. A pinned map.dir in site.json overrides all of this.
 """
 from __future__ import annotations
 
@@ -10,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -40,7 +45,23 @@ def _run_command(site: SiteConfig, cmd, cam_key: str = "default", mode: str = ""
             return 4
     try:
         env = {**os.environ, **cmd.env}
-        return subprocess.call(cmd.argv, cwd=str(cmd.cwd), env=env)
+        proc = subprocess.Popen(cmd.argv, cwd=str(cmd.cwd), env=env)
+        while True:
+            try:
+                return proc.wait()
+            except KeyboardInterrupt:
+                # Ctrl-C already reached the child through the terminal's process group; it is shutting down
+                # (saving the map). Do NOT kill it -- wait. A second Ctrl-C forces it down.
+                print("\n[sts] Ctrl-C: waiting for the child to finish saving (Ctrl-C again to force quit)...", flush=True)
+                try:
+                    return proc.wait()
+                except KeyboardInterrupt:
+                    proc.terminate()
+                    try:
+                        return proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        return proc.wait()
     finally:
         if lock:
             lock.release()
@@ -150,8 +171,59 @@ def cmd_map(args) -> int:
     site = _load_site(args)
     reg = _registry()
     builder = reg.create("map_builder", site.slots.get("map_builder"))
-    cmd = builder.build(site, args.cam, extra_args=args.extra, record=not args.no_record)
-    return _run_command(site, cmd, mode="map")
+    pinned = bool(site.map.dir)
+    out = site.map_dir() if pinned else site.maps_root() / site.new_map_name()
+    cmd = builder.build(site, args.cam, extra_args=args.extra, record=not args.no_record, out_dir=out,
+                        overrides=site.map_overrides())
+    print(f"new map folder: {out}")
+    rc = _run_command(site, cmd, mode="map")
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "sts_map_run.json").write_text(json.dumps(
+            {"argv": list(cmd.argv), "overrides": site.map_overrides(), "return_code": rc,
+             "finished": time.strftime("%Y-%m-%d %H:%M:%S")}, indent=2))
+    except OSError:
+        pass
+    if pinned:
+        print(f"WARNING: site.json map.dir is pinned, so {out} was reused and nothing was activated. "
+              f"Set map.dir to null to get a new folder per run.")
+        return rc
+    if not (out / "dense" / "points.ply").exists():
+        print(f"no dense/points.ply in {out} -- this run is NOT activated; the active map is still {site.map_dir()}")
+        return rc or 1
+    if args.no_activate:
+        print(f"saved, not activated (--no-activate). Use `python -m sts map-use {out.name}` to switch.")
+        return rc
+    site.map.current, site.map.map_id = out.name, None
+    site.save(_site_path(args))
+    print(f"ACTIVE MAP is now {out.name}. Next: `sts map-lock`, then re-run the anchor (`sts anchor solve`) -- "
+          f"an anchor made on an older map will not match this one.")
+    return rc
+
+
+def cmd_maps(args) -> int:
+    site = _load_site(args)
+    maps = site.list_maps()
+    if not maps:
+        print(f"no maps under {site.maps_root()}")
+        return 0
+    for m in maps:
+        print(f"{'*' if m['active'] else ' '} {m['name']}  {m['created']}  "
+              f"{'points' if m['has_points'] else 'NO-POINTS'}  {'locked ' + str(m['map_id']) if m['locked'] else 'unlocked'}")
+    print("(* = active)")
+    return 0
+
+
+def cmd_map_use(args) -> int:
+    site = _load_site(args)
+    m = site.find_map(args.name)
+    if site.map.dir:
+        print("site.json map.dir is pinned and wins over map.current; set it to null first.")
+        return 1
+    site.map.current, site.map.map_id = m["name"], m["map_id"]
+    site.save(_site_path(args))
+    print(f"ACTIVE MAP is now {m['name']}. Re-run `sts anchor solve` if the anchor was made on another map.")
+    return 0
 
 
 def cmd_map_lock(args) -> int:
@@ -323,8 +395,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("boundaries", help="import-boundary check"); p.set_defaults(fn=cmd_boundaries)
     p = sub.add_parser("contracts", help="validate a file against a contract schema"); p.add_argument("--file"); p.add_argument("--schema"); p.set_defaults(fn=cmd_contracts)
 
-    p = sub.add_parser("map", help="M1: live mapping (records a bag by default)"); cam(p); p.add_argument("--no-record", action="store_true")
+    p = sub.add_parser("map", help="M1: live mapping (records a bag by default)"); cam(p); p.add_argument("--no-record", action="store_true"); p.add_argument("--no-activate", action="store_true", help="save the map but keep the current active map")
     p.add_argument("extra", nargs=argparse.REMAINDER, help="extra args for run_live_map.py after `--`"); p.set_defaults(fn=cmd_map)
+    p = sub.add_parser("maps", help="list saved maps (* = active)"); p.set_defaults(fn=cmd_maps)
+    p = sub.add_parser("map-use", help="make a saved map the active one"); p.add_argument("name", help="folder name, unique prefix, or 'latest'"); p.set_defaults(fn=cmd_map_use)
     p = sub.add_parser("map-lock", help="M1: write manifest.json + map_id, make the bundle read-only"); p.add_argument("--writable", action="store_true"); p.set_defaults(fn=cmd_map_lock)
     p = sub.add_parser("anchor", help="M2: prepare|capture|solve|calibrate|markers|check"); cam(p)
     p.add_argument("verb", choices=["prepare", "capture", "solve", "calibrate", "markers", "check"])

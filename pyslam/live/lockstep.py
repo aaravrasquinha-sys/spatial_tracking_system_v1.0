@@ -40,8 +40,22 @@ from pyslam.pipeline import Pipeline
 from pyslam.live.tracker_stage import TrackerStage
 from pyslam.live.dense_process import DenseProcessState
 from pyslam.mapping.qa_stream import MappingStatusAggregator
+from pyslam.live.dense_select import select_dense_pose
 
 log = get_logger("live.lockstep")
+
+
+def dense_frame_poses(poses: dict, frame_records: list, frame_ids, cfg=None) -> dict:
+    """Batch-1 (N6): {frame_id: world<-cam} for the given TRACKER keyframe ids, computed as
+    pose[ref keyframe] @ T_ref_frame. Works even when the backend's own keyframes differ from the
+    tracker's; frames the backend marked LOST are skipped (their T_ref_frame is a fabricated identity)."""
+    rec_by_fid = {rec["frame_id"]: rec for rec in frame_records}
+    out = {}
+    for fid in frame_ids:
+        T = select_dense_pose(rec_by_fid.get(fid), poses, cfg)      # Batch-C: dense_pose_mode (cfg=None -> "all")
+        if T is not None:
+            out[fid] = T
+    return out
 
 
 @dataclass
@@ -78,17 +92,21 @@ def run_lockstep(cfg: Config, source: SensorSource, max_frames: Optional[int] = 
             break
 
     # tracker + dense pass (frame rate)
+    def _feed_dense(kf):
+        pts, pixel_yx = kf.fused.get_points(kf.K, stride=4,
+                                            max_depth_m=float(getattr(cfg, "dense_max_depth_m", 0.0)),
+                                            edge_rel=float(getattr(cfg, "dense_edge_rel", 0.0)))
+        if pts.shape[0] > 0:
+            # Batch-1 fix: colour is sampled at the EXACT pixels get_points returned.
+            dense.on_keyframe_points(kf.frame_id, pts, kf.rgb[pixel_yx[:, 0], pixel_yx[:, 1]])
+
     for frame in frames:
         snap = tracker.process_frame(frame)
         qa.add_frame(snap)
-        if snap.is_keyframe and tracker._cur_fused is not None:
-            K = frame.intr.K()
-            pts, _ = tracker._cur_fused.get_points(K, stride=4)
-            if pts.shape[0] > 0:
-                rgb = frame.rgb
-                # colour sampled at the SAME stride/pixels get_points used
-                colors = rgb[::4, ::4].reshape(-1, 3)[:pts.shape[0]]
-                dense.on_keyframe_points(frame.frame_id, pts, colors)
+        for kf in tracker.take_finished_keyframes():        # Batch-C: a keyframe is ready once its depth is done
+            _feed_dense(kf)
+    for kf in tracker.flush():
+        _feed_dense(kf)
 
     # backend pass (keyframe rate, via the existing validated Pipeline)
     class _ReplaySource:
@@ -106,11 +124,8 @@ def run_lockstep(cfg: Config, source: SensorSource, max_frames: Optional[int] = 
     # stores keyframe points by frame_id (tracker's numbering); graph
     # node ids come from a separate counter. Translate via
     # frame_records before handing poses to dense.
-    fid_to_nid = {rec["frame_id"]: rec["ref_kf_id"] for rec in result.frame_records
-                  if rec["is_keyframe"] and rec["ref_kf_id"] is not None}
     poses = pipeline.graph.get_poses()
-    dense_poses = {fid: poses[nid] for fid, nid in fid_to_nid.items() if nid in poses}
-    dense.on_pose_update(dense_poses)
+    dense.on_pose_update(dense_frame_poses(poses, result.frame_records, list(dense._stored.keys()), cfg))
 
     return LockstepResult(pipeline_result=result, pipeline=pipeline, tracker=tracker,
                            dense=dense, qa=qa)

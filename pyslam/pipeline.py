@@ -36,7 +36,8 @@ from pyslam.graph.posegraph import PoseGraph
 from pyslam.proximity.detect import find_proximity_candidates
 from pyslam.imu.gravity import build_gravity_prior_link, is_quasi_static, gravity_direction_body
 from pyslam.imu.bridge import build_bridge_link  # WP-M
-from pyslam.loop.local_reloc import try_local_relocalization, build_local_reloc_link  # WP-LIVE N2
+from pyslam.loop.local_reloc import (try_local_relocalization, build_local_reloc_link,  # WP-LIVE N2
+                                     try_global_relocalization)  # Batch-B
 
 log = get_logger("pipeline")
 
@@ -153,6 +154,12 @@ class Pipeline:
         self._pending_local_reloc = None  # WP-LIVE N2: set right before force_new_keyframe()
             # when try_local_relocalization() succeeds this LOST event; consumed (and cleared)
             # by the node-creation block below instead of building a bridge link.
+        self._paused: bool = False          # Batch-B: mapping paused after a loss (lost_pause_enabled)
+        self._pause_t0: float = 0.0
+        self._pause_frames: int = 0
+        self._pause_last_msg_t: float = 0.0
+        self.n_pauses: int = 0
+        self.paused_s_total: float = 0.0
         self._proximity_attempted: set = set()  # WP-P4: (a,b) pairs already
             # tried (accepted or not) -- never re-verify the same pair twice
         self._imu_since_last_kf: list = []  # WP-P5.2: accumulated Frame.imu
@@ -310,6 +317,8 @@ class Pipeline:
                 if frame.t - t_start <= self.cfg.gravity_align_hold_s:
                     result.startup_imu_window.append(frame.imu)
 
+            if self._paused and self.odometry.status == "OK":
+                self._end_pause(frame, result, "tracking found the previous reference again")
             if self.odometry.status == "LOST":
                 result.status_log.append(f"[t={frame.t:.2f}] LOST, attempting recovery")
                 # WP-LIVE N2: try a real, measured RGB-D relocalization
@@ -333,7 +342,7 @@ class Pipeline:
                     )
                     if reloc_result is not None:
                         matched_node = self.memory.get(reloc_result.node_id)
-                        T_world_query = matched_node.pose_map @ lie.se3_inverse(reloc_result.T_node_query)
+                        T_world_query = matched_node.pose_map @ reloc_result.T_node_query
                         # odometry.cur_pose is in the ODOMETRY (world_odom)
                         # frame; pose_map_init is later computed as
                         # self._map_correction @ odometry.cur_pose, so we
@@ -347,7 +356,9 @@ class Pipeline:
                             f"[t={frame.t:.2f}] local_reloc SUCCESS vs node {reloc_result.node_id} "
                             f"(inliers={reloc_result.n_inliers}, ratio={reloc_result.inlier_ratio:.2f}) "
                             f"-- session NOT broken, no bridge link needed")
-                self.odometry.force_new_keyframe(sig)
+                paused_now = self._lost_pause_step(sig, frame, result)   # Batch-B
+                if not paused_now:
+                    self.odometry.force_new_keyframe(sig)
                 # WP-B3 (Phase 1 plan finding, WP-A3): a LOST recovery
                 # breaks tracking CONTINUITY -- the new reference frame's
                 # pose_odom is not related to the old one by any measured
@@ -365,7 +376,7 @@ class Pipeline:
                 # transform (reloc_result.T_node_query) tying the new
                 # reference back to the map, so the session stays
                 # continuous.
-                if self._pending_local_reloc is None:
+                if self._pending_local_reloc is None and not paused_now:
                     self._session_id += 1
 
             if self.odometry.last_keyframe_created:
@@ -598,6 +609,64 @@ class Pipeline:
         ra, rb = self._uf_find(a), self._uf_find(b)
         if ra != rb:
             self._uf_parent[ra] = rb
+
+    # ------------------------------------------------------------------ Batch-B: pause + whole-map search
+    def _end_pause(self, frame, result: "PipelineResult", how: str) -> None:
+        dur = max(frame.t - self._pause_t0, 0.0)
+        self.paused_s_total += dur
+        self._paused = False
+        result.status_log.append(f"[t={frame.t:.2f}] mapping RESUMED after {dur:.1f}s paused ({how})")
+        log.info(f"Mapping RESUMED after {dur:.1f}s paused ({how}).")
+
+    def _lost_pause_step(self, sig, frame, result: "PipelineResult") -> bool:
+        """Called on a LOST frame after the quick check against recent keyframes. Returns True while mapping
+        stays PAUSED (the caller then does NOT start a new reference keyframe / bridge, so nothing is added
+        to the map). Returns False when the normal path should continue: feature off, nothing mapped yet,
+        timed out, or the whole-map search just relocalized (self._pending_local_reloc is then set and the
+        caller creates the next keyframe linked to the matched keyframe -- same map)."""
+        cfg = self.cfg
+        if (not cfg.lost_pause_enabled) or self._first_node_id is None or self._pending_local_reloc is not None:
+            if self._paused:
+                self._end_pause(frame, result, "recovered by the recent-keyframe check"
+                                if self._pending_local_reloc is not None else "pause disabled")
+            return False
+        if not self._paused:
+            self._paused = True
+            self._pause_t0 = frame.t
+            self._pause_frames = 0
+            self._pause_last_msg_t = frame.t
+            self.n_pauses += 1
+            result.status_log.append(f"[t={frame.t:.2f}] LOST -- mapping PAUSED, searching the whole map")
+            log.warning("LOST -- mapping PAUSED. Point the camera at an area you ALREADY MAPPED; "
+                        "searching the whole map to continue the same map.")
+        elapsed = frame.t - self._pause_t0
+        if cfg.lost_pause_timeout_s > 0 and elapsed >= cfg.lost_pause_timeout_s:
+            log.warning(f"Still lost after {elapsed:.0f}s -- giving up the pause (lost_pause_timeout_s).")
+            self._end_pause(frame, result, "timeout, falling back to a bridge")
+            return False
+        every = max(int(cfg.lost_pause_search_every), 1)
+        search_now = (self._pause_frames % every) == 0
+        self._pause_frames += 1
+        if search_now and sig.valid.any():
+            r = try_global_relocalization(
+                sig, self.memory, cfg, max_candidates=int(cfg.lost_pause_max_candidates),
+                min_inliers=int(cfg.lost_pause_min_inliers),
+                min_inlier_ratio=cfg.local_reloc_min_inlier_ratio,
+                max_rms_m=cfg.local_reloc_max_rms_m, dist_thresh_m=cfg.local_reloc_dist_thresh_m)
+            if r is not None:
+                matched_node = self.memory.get(r.node_id)
+                T_world_query = matched_node.pose_map @ r.T_node_query
+                self.odometry.cur_pose = lie.se3_inverse(self._map_correction) @ T_world_query
+                self._pending_local_reloc = (r.node_id, r)
+                result.status_log.append(
+                    f"[t={frame.t:.2f}] whole-map relocalization SUCCESS vs node {r.node_id} "
+                    f"(inliers={r.n_inliers}, ratio={r.inlier_ratio:.2f})")
+                self._end_pause(frame, result, f"relocalized against keyframe {r.node_id}, inliers={r.n_inliers}")
+                return False
+        if frame.t - self._pause_last_msg_t >= 5.0:
+            self._pause_last_msg_t = frame.t
+            log.warning(f"Still lost ({elapsed:.0f}s) -- point the camera at an area you already mapped.")
+        return True
 
     def _loop_candidates(self, node: Node) -> list:
         """WM nodes eligible as loop-closure candidates for `node`. With the

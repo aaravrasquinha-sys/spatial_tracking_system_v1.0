@@ -85,13 +85,17 @@ class DenseProcessState:
             n_updated += 1
         return n_updated
 
-    def export_ply_points(self, max_points: Optional[int] = 2_000_000):
-        return self.fuser.export_points(max_points=max_points)
+    def export_ply_points(self, max_points: Optional[int] = 2_000_000, min_neighbors: int = 0):
+        pts, colors = self.fuser.export_points(max_points=max_points)
+        if min_neighbors > 0:                      # Batch-C: drop stray, isolated points (default off)
+            from pyslam.mapping.dense_filter import remove_isolated_voxels
+            pts, colors = remove_isolated_voxels(pts, colors, self.fuser.voxel_size_m, min_neighbors)
+        return pts, colors
 
 
 def run_dense_process(points_queue, pose_queue, stop_event, out_ply_path: Optional[str] = None,
                        export_interval_s: float = 5.0, voxel_size_m: float = 0.02,
-                       get_timeout_s: float = 0.5) -> None:
+                       get_timeout_s: float = 0.5, export_min_neighbors: int = 0) -> None:
     """The multiprocessing.Process target. Two independent input
     channels (points from tracker, poses from backend) are drained in
     one loop with short timeouts on each so neither one can starve the
@@ -124,7 +128,7 @@ def run_dense_process(points_queue, pose_queue, stop_event, out_ply_path: Option
             pass
 
         if out_ply_path is not None and (time.time() - last_export) > export_interval_s:
-            pts, colors = state.export_ply_points()
+            pts, colors = state.export_ply_points(min_neighbors=export_min_neighbors)
             if pts.shape[0] > 0:
                 from pyslam.mapping.export import write_ply
                 write_ply(out_ply_path, pts, colors)
@@ -170,7 +174,7 @@ def run_dense_process(points_queue, pose_queue, stop_event, out_ply_path: Option
     # "lock now" does) could otherwise exit before the periodic export
     # above ever fires even once, silently producing no output at all.
     if out_ply_path is not None:
-        pts, colors = state.export_ply_points()
+        pts, colors = state.export_ply_points(min_neighbors=export_min_neighbors)
         if pts.shape[0] > 0:
             from pyslam.mapping.export import write_ply
             write_ply(out_ply_path, pts, colors)

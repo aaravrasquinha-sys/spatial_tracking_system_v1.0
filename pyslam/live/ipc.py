@@ -135,9 +135,14 @@ class FramePacket:
     height: int
     depth_scale: float
     baseline: float
+    # Batch-1 (N6): True when the TRACKER decided this frame is a keyframe
+    # (it also sent that keyframe's points to dense). The backend uses it to
+    # publish a pose for exactly those frames, even when the backend's own
+    # odometry picked different keyframes.
+    tracker_keyframe: bool = False
 
 
-def pack_frame(frame: Frame) -> FramePacket:
+def pack_frame(frame: Frame, tracker_keyframe: bool = False) -> FramePacket:
     return FramePacket(
         t=frame.t, frame_id=frame.frame_id,
         rgb_handle=alloc_shm_array(frame.rgb), depth_handle=alloc_shm_array(frame.depth),
@@ -146,7 +151,15 @@ def pack_frame(frame: Frame) -> FramePacket:
         fx=frame.intr.fx, fy=frame.intr.fy, cx=frame.intr.cx, cy=frame.intr.cy,
         width=frame.intr.width, height=frame.intr.height,
         depth_scale=frame.intr.depth_scale, baseline=frame.intr.baseline,
+        tracker_keyframe=bool(tracker_keyframe),
     )
+
+
+def free_frame_packet(packet: FramePacket) -> None:
+    """Free a frame packet's shared memory WITHOUT reading it (used when a
+    queue put fails and the packet is dropped -- otherwise the block leaks)."""
+    free_shm_array(packet.rgb_handle)
+    free_shm_array(packet.depth_handle)
 
 
 def unpack_frame(packet: FramePacket, free_after: bool = False) -> Frame:
@@ -202,6 +215,18 @@ def pack_pose_update(poses: dict, generation: int) -> PoseUpdatePacket:
     mats = np.stack([poses[i] for i in ids], axis=0).astype(np.float64) if ids.size else np.zeros((0, 4, 4))
     return PoseUpdatePacket(ids_handle=alloc_shm_array(ids), poses_handle=alloc_shm_array(mats),
                              generation=generation)
+
+
+def free_pose_packet(packet: PoseUpdatePacket) -> None:
+    """Free a pose packet's shared memory without reading it (dropped put)."""
+    free_shm_array(packet.ids_handle)
+    free_shm_array(packet.poses_handle)
+
+
+def free_points_packet(packet: "KeyframePointsPacket") -> None:
+    """Free a keyframe-points packet's shared memory without reading it."""
+    free_shm_array(packet.points_handle)
+    free_shm_array(packet.colors_handle)
 
 
 def unpack_pose_update(packet: PoseUpdatePacket, free_after: bool = True) -> dict:
