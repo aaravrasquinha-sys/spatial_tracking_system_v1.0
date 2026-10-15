@@ -194,7 +194,10 @@ def _run(args):
     if args.cmd == "solve":
         from pyslam.anchor.capture import StaticCapture
         paths = sorted({q for pat in args.capture for q in (glob.glob(pat) or [pat])})
-        return _do_solve(args, _cfg(args), [StaticCapture.load(p) for p in paths])
+        caps = [StaticCapture.load(p) for p in paths]
+        for c_, p_ in zip(caps, paths):
+            c_.path = p_                       # Batch-E: so a warning can name the file it is about
+        return _do_solve(args, _cfg(args), caps)
 
     if args.cmd == "calibrate":
         cfg = _cfg(args)

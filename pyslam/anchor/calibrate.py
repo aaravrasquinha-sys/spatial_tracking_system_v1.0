@@ -12,6 +12,7 @@ Design rules enforced here (see SYSTEM_SUMMARY_ANCHOR.md):
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
+import os
 import time
 import numpy as np
 
@@ -80,6 +81,78 @@ def pool_captures(caps: List[StaticCapture]) -> StaticCapture:
                          source="pooled:" + ",".join(sorted({c.source for c in caps})))
 
 
+# ---- Batch-E: capture consistency -------------------------------------------------------------------------------
+# `anchor solve` is handed EVERY capture file of the camera, and pool_captures() blends them into one depth image. A
+# capture taken with the camera somewhere else (before it was moved, mounted differently, hand-held ...) turns that
+# blend into garbage: sigma jumps to decimetres/metres and the solve is rejected. Two captures of the same static view
+# must agree on the depth image (median |difference| a few mm) and on the gravity direction; anything that does not
+# is left out, loudly, before pooling. When every capture agrees nothing changes.
+_CAP_TOL_M = 0.03          # median |depth difference| allowed between two captures of the SAME static view
+_CAP_UP_DEG = 1.0          # allowed angle between their gravity directions (IMU)
+_CAP_MIN_OVERLAP = 2000    # co-valid pixels needed to compare two captures at all
+
+
+def _capture_label(c: StaticCapture, i: int) -> str:
+    p = getattr(c, "path", None)
+    return os.path.basename(p) if p else f"capture #{i + 1} ({c.created or c.source or 'unnamed'})"
+
+
+def _capture_distance(a: StaticCapture, b: StaticCapture) -> Tuple[Optional[float], Optional[float]]:
+    """(median |depth difference| in metres over pixels valid in both, or None if too little overlap;
+        angle in degrees between the two gravity directions, or None if either has no IMU)."""
+    da, db = a.depth_med, b.depth_med
+    ok = np.isfinite(da) & np.isfinite(db) & (da > 0.3) & (da < 6.0) & (db > 0.3) & (db < 6.0)
+    d = float(np.median(np.abs(da[ok] - db[ok]))) if int(ok.sum()) >= _CAP_MIN_OVERLAP else None
+    ang = None
+    if a.up_cam is not None and b.up_cam is not None:
+        ang = float(geo.angle_between_deg(a.up_cam, b.up_cam))
+    return d, ang
+
+
+def select_consistent_captures(caps: List[StaticCapture], cfg=None):
+    """-> (kept captures in their original order, info dict). The largest group of mutually consistent captures wins
+    (a tie goes to the group holding the newest capture); if no two agree, only the newest is used."""
+    n = len(caps)
+    labels = [_capture_label(c, i) for i, c in enumerate(caps)]
+    info = {"n_given": n, "kept": list(labels), "dropped": []}
+    tol_m = float(getattr(cfg, "capture_consistency_tol_m", _CAP_TOL_M))
+    tol_deg = float(getattr(cfg, "capture_consistency_up_deg", _CAP_UP_DEG))
+    if n < 2 or tol_m <= 0.0 or any(c.depth_med.shape != caps[0].depth_med.shape for c in caps):
+        return list(caps), info
+    D = [[None] * n for _ in range(n)]
+    A = np.zeros((n, n), dtype=bool)
+    ANG = [[None] * n for _ in range(n)]
+    for i in range(n):
+        A[i, i] = True
+        for j in range(i + 1, n):
+            d, ang = _capture_distance(caps[i], caps[j])
+            D[i][j] = D[j][i] = d
+            ANG[i][j] = ANG[j][i] = ang
+            A[i, j] = A[j, i] = (d is not None and d <= tol_m) and (ang is None or ang <= tol_deg)
+    newest = max(range(n), key=lambda k: (caps[k].created or "", k))
+    best = max(range(n), key=lambda i: (int(A[i].sum()), bool(A[i, newest]), i))
+    group = [j for j in range(n) if A[best, j]]
+    if len(group) < 2:
+        group = [newest]
+    kept = [caps[j] for j in group]
+    info["kept"] = [labels[j] for j in group]
+    for k in range(n):
+        if k in group:
+            continue
+        ds = [D[k][j] for j in group if D[k][j] is not None]
+        angs = [ANG[k][j] for j in group if ANG[k][j] is not None]
+        if not ds:
+            why = "too little of its view overlaps the others"
+        elif float(np.median(ds)) > tol_m:
+            why = f"median depth differs {float(np.median(ds)) * 100:.1f} cm from the others (limit {tol_m * 100:.0f} cm)"
+        else:
+            why = f"gravity direction differs {float(np.median(angs)):.1f} deg from the others (limit {tol_deg:.1f} deg)"
+        info["dropped"].append({"capture": labels[k], "reason": why,
+                                "median_depth_diff_m": float(np.median(ds)) if ds else None,
+                                "gravity_diff_deg": float(np.median(angs)) if angs else None})
+    return kept, info
+
+
 def _T_room_cam_from_seed(c: Candidate, h: float, R_L_cam: np.ndarray) -> np.ndarray:
     T_room_L = lie.make_T(geo.rot_z(c.yaw), np.array([c.x, c.y, h]))
     return T_room_L @ lie.make_T(R_L_cam, np.zeros(3))
@@ -101,6 +174,15 @@ def calibrate(map_bundle: dict, captures: List[StaticCapture], cfg: Optional[Anc
     t0 = time.time()
     pts_map, colors = map_bundle["pts_map"], map_bundle.get("colors")
     warnings: List[str] = []
+
+    # ---- Batch-E: leave out captures that do not show the same static view as the others ----
+    captures, cap_sel = select_consistent_captures(captures, cfg)
+    for dr_ in cap_sel["dropped"]:
+        msg = f"IGNORED {dr_['capture']}: {dr_['reason']} -- the camera was not in the same place for that capture"
+        warnings.append(msg)
+        log.warning(msg)
+    if cap_sel["dropped"]:
+        log.warning(f"Using {len(cap_sel['kept'])} of {cap_sel['n_given']} captures: {', '.join(cap_sel['kept'])}")
 
     # ---- Stage 0: clean map, derive room frame, walkable ----
     if pts_map.shape[0] <= 4_000_000:
@@ -264,6 +346,7 @@ def calibrate(map_bundle: dict, captures: List[StaticCapture], cfg: Optional[Anc
         "n_query_points": int(cloud["pts"].shape[0]), "up_source": pp["up_source"],
         "physics": {"height_m": pp["height_m"], "floor_rms_m": pp["floor"]["rms_m"],
                     "imu_vs_floor_tilt_deg": pp["imu_vs_floor_tilt_deg"], "imu_info": cap.imu_info},
+        "capture_selection": cap_sel,
         "ambiguity": ambiguity, "repeatability": repeat, "sigma": sigma,
         "icp": {"rmse_m": res.rmse_m, "fitness": res.fitness, "coverage": res.coverage, "n_inliers": res.n_inliers,
                 "obs_min_eig": res.obs_min_eig, "obs_worst_direction": res.obs_worst, "chi2_scale": res.chi2_scale,
