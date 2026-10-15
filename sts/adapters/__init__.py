@@ -8,6 +8,7 @@ from __future__ import annotations
 
 
 def register_all(reg) -> None:
-    from sts.adapters import offline, runtime
+    from sts.adapters import identity, offline, runtime
     offline.register(reg)
     runtime.register(reg)
+    identity.register(reg)

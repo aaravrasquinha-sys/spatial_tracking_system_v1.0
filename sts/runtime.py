@@ -163,6 +163,8 @@ class SoakMonitor(threading.Thread):
         sup = self.chain.supervisor
         if sup is not None:
             s["watchdog"] = dict(sup.stats)
+        if self.chain.identity is not None:
+            s["identity"] = self.chain.identity.health()
         return s
 
     def run(self):
@@ -187,6 +189,7 @@ class Chain:
         self.supervisor: Optional[WatchdogSupervisor] = None
         self.m3_pipeline = None
         self.m4 = None
+        self.identity = None
         self.live_source = None
         self.server = None
         self.daemon = None
@@ -204,6 +207,11 @@ class Chain:
         self.frames_seen += 1
         if self.supervisor is not None:
             self.supervisor.observe(frame, self.last_n_tracks)
+            if self.identity is not None:      # metric features are invalid if the camera moved (R1 section 16)
+                if self.calib.state() == "ok":
+                    self.identity.unfreeze()
+                else:
+                    self.identity.freeze(f"calibration {self.calib.state()}")
         return self.m4.process(frame, dets)
 
     def on_tracks(self, frame, records):
@@ -276,7 +284,12 @@ def build_chain(plan: RunPlan, *, source_kind: str = "realsense", playback: Opti
     if write_logs:
         m4_writer = JsonlWorldTrackWriter(Path(m4_cfg.output.jsonl_dir) / f"{cam_id}_{stamp}.jsonl", phase=phase)
         chain.writers.append(m4_writer)
-    chain.m4 = M4Pipeline(m4_cfg, provider, walkable_grid=walkable, writer=m4_writer, on_tracks=chain.on_tracks)
+    # ---- identity (R1): slot `identity_resolver` (default none) + `identity_gallery`; also needs m4 identity.enabled ----
+    gallery = reg.create("identity_gallery", site.slots.get("identity_gallery")).build(m4_cfg.identity)
+    chain.identity = reg.create("identity_resolver", site.slots.get("identity_resolver")).build(
+        m4_cfg, gallery=gallery, log_dir=(site.logs_dir() / cam_id / "identity") if write_logs else None, cam_id=cam_id)
+    chain.m4 = M4Pipeline(m4_cfg, provider, walkable_grid=walkable, writer=m4_writer, on_tracks=chain.on_tracks,
+                          identity_engine=chain.identity)
     T = chain.m4.floor_transform
     if m4_writer is not None:
         m4_writer.map_id = T.map_id

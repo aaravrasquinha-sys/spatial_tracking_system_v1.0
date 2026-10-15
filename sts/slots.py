@@ -65,6 +65,13 @@ SLOTS: Dict[str, SlotSpec] = {s.name: s for s in [
     SlotSpec("sensor_model", "camera_model_file", "runtime",
              "load(site, cam) -> sts.camera_model.CameraModel; pushed into BOTH M2 and M4 generated configs.",
              reserved=("fitted_from_flat_wall",)),
+    SlotSpec("identity_resolver", "none", "runtime",
+             "build(m4_cfg, gallery, log_dir, cam_id) -> IdentityEngine | None (poi_localization.identity.engine). "
+             "None = identity off: M4 must behave bit-for-bit as before. Also needs M4Config.identity.enabled.",
+             reserved=("cnn_embedding",)),
+    SlotSpec("identity_gallery", "memory", "runtime",
+             "build(identity_cfg) -> BaseGalleryBackend (poi_localization.identity.gallery.base).",
+             reserved=("sqlite",)),
 ]}
 
 

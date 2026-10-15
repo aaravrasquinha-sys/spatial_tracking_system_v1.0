@@ -41,6 +41,7 @@ class M4Pipeline:
         writer: Optional[JsonlWorldTrackWriter] = None,
         on_tracks: Optional[TracksCallback] = None,
         default_dt: float = 1.0 / 30.0,
+        identity_engine=None,
     ):
         self.cfg = cfg
         # Fetched once (Section 2: Phase A doesn't change during a run;
@@ -56,6 +57,12 @@ class M4Pipeline:
         self.track_manager = TrackManager(cfg)
         self._prev_t: Optional[float] = None
         self.total_events: List[TrackEvent] = []
+        # R1 identity layer (None = disabled = bit-for-bit the old behaviour). Duck-typed: needs
+        # .step(frame, t, assignments, snapshot, events, outputs) -> {track_id: IdentityView}.
+        self.identity_engine = identity_engine
+        self.identity_errors: dict = {}
+        self._identity_consecutive_failures = 0
+        self.identity_disabled_reason: Optional[str] = None
 
     def _build_detection_measurements(self, frame: Frame, det: Detection2D) -> Optional[DetectionMeasurements]:
         # Reuse height's keypoint-confidence threshold: both are "is this
@@ -96,7 +103,7 @@ class M4Pipeline:
             height_sample_m=height_sample,
         )
 
-    def _to_phase_record(self, o: WorldTrackOutput, t_capture: float):
+    def _to_phase_record(self, o: WorldTrackOutput, t_capture: float, person: Optional[dict] = None):
         if self.cfg.phase == "A":
             return WorldTrackPhaseA(
                 t_capture=t_capture,
@@ -108,6 +115,7 @@ class M4Pipeline:
                 height_m=o.height_m,
                 src=o.src,
                 age_s=o.age_s,
+                person=person,
             )
         return WorldTrackPhaseB(
             id=o.world_track_id,
@@ -120,7 +128,36 @@ class M4Pipeline:
             src=o.src,
             age_s=o.age_s,
             bbox=o.bbox_px if o.bbox_px is not None else (0.0, 0.0, 0.0, 0.0),
+            person=person,
         )
+
+    def _run_identity(self, frame, src_dets, det_measurements, outputs, events) -> dict:
+        """Identity must never be able to crash or stall tracking: everything is exception-isolated,
+        logged once per error class, and the engine is switched off after repeated failures."""
+        eng = self.identity_engine
+        if eng is None:
+            return {}
+        tm = self.track_manager
+        try:
+            assignments = {}
+            for tid, i in tm.last_assignment.items():
+                assignments[tid] = (src_dets[i], det_measurements[i])
+            for tid, i in tm.last_new_tracks.items():
+                assignments[tid] = (src_dets[i], det_measurements[i])
+            views = eng.step(frame, frame.t, assignments, tm.snapshot(), events, outputs)
+            self._identity_consecutive_failures = 0
+            return {tid: v.to_dict() for tid, v in views.items()}
+        except Exception as e:
+            name = type(e).__name__
+            if name not in self.identity_errors:
+                log.error(f"identity engine error ({name}): {e}; tracking continues")
+            self.identity_errors[name] = self.identity_errors.get(name, 0) + 1
+            self._identity_consecutive_failures += 1
+            if self._identity_consecutive_failures >= 20:
+                self.identity_disabled_reason = f"disabled after 20 consecutive failures (last: {name}: {e})"
+                log.error(f"identity engine {self.identity_disabled_reason}")
+                self.identity_engine = None
+            return {}
 
     def process(self, frame: Frame, detections: List[Detection2D]):
         dt = (frame.t - self._prev_t) if self._prev_t is not None else self.default_dt
@@ -128,10 +165,12 @@ class M4Pipeline:
         self._prev_t = frame.t
 
         det_measurements = []
+        src_dets = []   # parallel to det_measurements (identity needs the source Detection2D)
         for det in detections:
             dm = self._build_detection_measurements(frame, det)
             if dm is not None:
                 det_measurements.append(dm)
+                src_dets.append(det)
 
         outputs, events = self.track_manager.update(frame.t, dt, det_measurements, walkable_grid=self.walkable_grid)
         for e in events:
@@ -139,11 +178,12 @@ class M4Pipeline:
                 log.debug(f"track {e.world_track_id}: {e.detail}")
             elif e.kind == "2d_id_mismatch":
                 log.info(f"track {e.world_track_id}: {e.detail}")
-            elif e.kind in ("track_lost", "track_confirmed"):
+            elif e.kind in ("track_lost", "track_confirmed", "track_ended"):
                 log.info(f"track {e.world_track_id}: {e.kind} ({e.detail})")
         self.total_events.extend(events)
 
-        records = [self._to_phase_record(o, frame.t) for o in outputs]
+        views = self._run_identity(frame, src_dets, det_measurements, outputs, events)
+        records = [self._to_phase_record(o, frame.t, views.get(o.world_track_id)) for o in outputs]
 
         if self.writer is not None:
             self.writer.write_frame(frame.t, frame.frame_id, records)

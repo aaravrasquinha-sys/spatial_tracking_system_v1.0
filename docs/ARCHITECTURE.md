@@ -54,6 +54,8 @@ partial JSON; `site.json` also preserves unknown keys. An old file never breaks 
 | `calib_state_provider` | `watchdog` | -- | `.state()` -> `ok/suspect/missing`, `.reason()` |
 | `track_source` | `live` | `multi_camera_fusion` | `poi_present.sources.base.TrackSource` |
 | `sensor_model` | `camera_model_file` | `fitted_from_flat_wall` | `CameraModel` pushed into BOTH M2 and M4 configs |
+| `identity_resolver` | `none` (+ `multicue_v1`) | `cnn_embedding` | `IdentityEngine` or `None` (off = bit-for-bit old behaviour) |
+| `identity_gallery` | `memory` | `sqlite` | `BaseGalleryBackend` for person profiles |
 
 Registering a reserved name raises; selecting one in `site.json` fails with "reserved (planned, not built yet)". That is
 deliberate: a config can never silently name something that does not exist.

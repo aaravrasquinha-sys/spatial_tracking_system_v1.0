@@ -12,6 +12,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from poi_localization.identity.config import IdentityConfig
+
 
 @dataclass
 class FixedTransformConfig:
@@ -166,6 +168,7 @@ class M4Config:
     gates: GateConfig = field(default_factory=GateConfig)
     track: TrackLifecycleConfig = field(default_factory=TrackLifecycleConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    identity: IdentityConfig = field(default_factory=IdentityConfig)
 
     @classmethod
     def load(cls, path: str | Path) -> "M4Config":
@@ -186,6 +189,7 @@ class M4Config:
             gates=GateConfig(**raw.get("gates", {})),
             track=TrackLifecycleConfig(**raw.get("track", {})),
             output=OutputConfig(**raw.get("output", {})),
+            identity=IdentityConfig.from_dict(raw.get("identity", {})),
         )
 
     def save(self, path: str | Path) -> None:

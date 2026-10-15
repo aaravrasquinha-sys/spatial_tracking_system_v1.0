@@ -17,6 +17,13 @@ from pathlib import Path
 from typing import Iterator, List, Optional, Tuple, Union
 
 
+def _drop_none_person(d: dict) -> dict:
+    """Additive-only contract: with identity off the serialised track is byte-identical to before."""
+    if d.get("person") is None:
+        d.pop("person", None)
+    return d
+
+
 @dataclass
 class WorldTrackPhaseA:
     t_capture: float
@@ -28,9 +35,10 @@ class WorldTrackPhaseA:
     height_m: Optional[float]
     src: str  # "depth" | "raycast" | "fused" | "predicted"
     age_s: float
+    person: Optional[dict] = None   # R1: identity view; omitted from the wire/log when None
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        return _drop_none_person(asdict(self))
 
 
 @dataclass
@@ -47,9 +55,10 @@ class WorldTrackPhaseB:
     src: str
     age_s: float
     bbox: Tuple[float, float, float, float]
+    person: Optional[dict] = None   # R1: identity view; omitted when None
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        return _drop_none_person(asdict(self))
 
 
 WorldTrack = Union[WorldTrackPhaseA, WorldTrackPhaseB]

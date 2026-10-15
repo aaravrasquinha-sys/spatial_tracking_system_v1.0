@@ -66,7 +66,7 @@ class WorldTrackOutput:
 
 @dataclass
 class TrackEvent:
-    kind: str  # "measurement_rejected" | "2d_id_mismatch" | "track_confirmed" | "track_lost"
+    kind: str  # "measurement_rejected" | "2d_id_mismatch" | "track_confirmed" | "track_lost" | "track_ended"
     world_track_id: Optional[int]
     detail: str
 
@@ -101,9 +101,26 @@ class TrackManager:
         self.cfg = cfg
         self._tracks: Dict[int, _Track] = {}
         self._next_id = 1
+        # Identity hooks (R1): which input detection updated / spawned which track in the LAST update().
+        # Values are indices into the `detections` list passed to update(). Read-only for callers.
+        self.last_assignment: Dict[int, int] = {}
+        self.last_new_tracks: Dict[int, int] = {}
 
     def active_track_count(self) -> int:
         return len(self._tracks)
+
+    def snapshot(self) -> Dict[int, dict]:
+        """Read-only per-track view for the identity layer (R1)."""
+        out: Dict[int, dict] = {}
+        for tid, tr in self._tracks.items():
+            if tr.kf is None:
+                continue
+            x, y = tr.kf.predicted_position()
+            out[tid] = {"id": tid, "state": tr.state, "position_xy": (x, y),
+                        "velocity_xy": (float(tr.kf.x[2]), float(tr.kf.x[3])),
+                        "time_since_update_s": tr.time_since_update_s, "last_2d_id": tr.last_2d_id,
+                        "last_bbox": tr.last_bbox, "hits": tr.hits}
+        return out
 
     def _new_id(self) -> int:
         tid = self._next_id
@@ -170,6 +187,10 @@ class TrackManager:
         detections = [self._filter_walkable(d, walkable_grid) for d in detections]
         # Only detections with at least one surviving measurement participate.
         usable = [d for d in detections if d.depth_measurement is not None or d.raycast_measurement is not None]
+        usable_src_idx = [i for i, d in enumerate(detections)
+                          if d.depth_measurement is not None or d.raycast_measurement is not None]
+        self.last_assignment = {}
+        self.last_new_tracks = {}
 
         for track in self._tracks.values():
             if track.kf is not None:
@@ -227,6 +248,7 @@ class TrackManager:
                 det = usable[det_idx]
                 applied = self._apply_measurements(track, det, events)
                 if applied:
+                    self.last_assignment[tid] = usable_src_idx[det_idx]
                     if track.last_2d_id is not None and det.track_id_2d != track.last_2d_id:
                         events.append(
                             TrackEvent(
@@ -259,6 +281,9 @@ class TrackManager:
                     track.just_transitioned_to_lost = True
                     events.append(TrackEvent("track_lost", track.id, f"age_s={t_capture - track.created_t:.2f}"))
                 elif track.time_since_update_s > self.cfg.track.coasting_budget_s + self.cfg.track.lost_grace_s:
+                    events.append(TrackEvent("track_ended", track.id,
+                                             f"age_s={t_capture - track.created_t:.2f} "
+                                             f"unseen_s={track.time_since_update_s:.2f}"))
                     del self._tracks[tid]
                     continue
 
@@ -277,6 +302,7 @@ class TrackManager:
             track.height_ema.update(det.height_sample_m)
             track.hits = 1
             self._tracks[track.id] = track
+            self.last_new_tracks[track.id] = usable_src_idx[j]
 
         # Unified confirmation-check-and-output pass over every track now
         # in self._tracks (both pre-existing and just-spawned) -- doing
