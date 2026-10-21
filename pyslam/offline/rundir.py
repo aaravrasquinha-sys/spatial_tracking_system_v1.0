@@ -119,6 +119,58 @@ class RunData:
             keep.append(pgo.Edge(e["a"], e["b"], e["T_ab"], info, kind=e["kind"]))
         return keep, counts
 
+    def improve_bridges(self, edges: List[pgo.Edge], window_s: float = 1.0, max_speed: float = 1.5,
+                        sigma_t: float = 0.05, sigma_t_rel: float = 0.5) -> dict:
+        """A bridge spans a lost-tracking gap and the live run guessed 'no movement' across it (or a
+        velocity frozen at the moment of loss). Replace its translation by the walking velocity measured
+        on the tracked odometry just before AND just after the gap (each in its own keyframe frame,
+        so the unknown rotation across the gap does not matter; the bridge's gyro rotation is kept),
+        times the gap length. Its weight is set so loop closures can still move it."""
+        t_of = {i: float(self.nodes[i].sig.t) for i in self.ids}
+        odom_next, odom_prev = {}, {}
+        for e in edges:
+            if e.kind == "odom":
+                odom_next[e.a] = e.b
+                odom_prev[e.b] = e.a
+        n_fixed, shifts = 0, []
+        for e in edges:
+            if e.kind != "bridge":
+                continue
+            dt = t_of[e.b] - t_of[e.a]
+            vels = []
+            # before: walk back along odometry links from a
+            k, Ra = e.a, self.pose_odom[e.a][:3, :3]
+            while k in odom_prev and t_of[e.a] - t_of[odom_prev[k]] <= window_s:
+                k = odom_prev[k]
+            if k != e.a:
+                d = Ra.T @ (self.pose_odom[e.a][:3, 3] - self.pose_odom[k][:3, 3])
+                vels.append(d / max(t_of[e.a] - t_of[k], 1e-3))
+            # after: walk forward from b, expressed in b's frame, rotated into a's frame by the bridge rotation
+            k, Rb = e.b, self.pose_odom[e.b][:3, :3]
+            while k in odom_next and t_of[odom_next[k]] - t_of[e.b] <= window_s:
+                k = odom_next[k]
+            if k != e.b:
+                d = Rb.T @ (self.pose_odom[k][:3, 3] - self.pose_odom[e.b][:3, 3])
+                vels.append(e.T_ab[:3, :3] @ d / max(t_of[k] - t_of[e.b], 1e-3))
+            if not vels or dt <= 0:
+                continue
+            v = np.mean(vels, axis=0)
+            if np.linalg.norm(v) > max_speed:
+                continue
+            t_new = v * dt
+            shifts.append(float(np.linalg.norm(t_new - e.T_ab[:3, 3])))
+            e.T_ab = e.T_ab.copy()
+            e.T_ab[:3, 3] = t_new
+            st = sigma_t + sigma_t_rel * float(np.linalg.norm(t_new))
+            e.info = e.info.copy()
+            e.info[:3, :] = 0.0
+            e.info[:, :3] = 0.0
+            e.info[:3, :3] = np.eye(3) / st ** 2
+            e.meta["velocity_bridge"] = True
+            n_fixed += 1
+        return {"bridges_with_velocity": n_fixed,
+                "bridge_translation_change_m_median": round(float(np.median(shifts)), 3) if shifts else None}
+
     def frame_poses(self, kf_poses: Dict[int, np.ndarray]) -> List[Tuple[float, np.ndarray]]:
         """Every frame's pose, carried along with its reference keyframe's correction."""
         out = []

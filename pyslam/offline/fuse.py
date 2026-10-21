@@ -8,7 +8,7 @@ thick walls. Here every used frame's depth is fused into ONE surface:
   * open3d available: a TSDF volume (the standard KinectFusion-style
     fusion RTAB-Map and others export) -> map_mesh.ply (a clean triangle
     mesh) + map_cloud.ply (its points);
-  * otherwise: a voxel-average cloud (each 1-2 cm voxel keeps the mean
+  * always also: a voxel-average cloud (each 1-2 cm voxel keeps the mean
     position/colour of everything that fell into it, and voxels seen in
     fewer than min_hits frames are dropped as noise) -> map_cloud.ply.
 
@@ -71,6 +71,58 @@ class _VoxelFuser:
         return a[:, :3] / a[:, 6:7], np.clip(a[:, 3:6] / a[:, 6:7], 0, 255).astype(np.uint8)
 
 
+class _Tsdf:
+    """open3d TSDF fusion: the tensor VoxelBlockGrid API (open3d >= 0.15) when present, else the legacy
+    ScalableTSDFVolume. Surfaces seen in fewer than min_hits fused frames are left out of the mesh."""
+    def __init__(self, o3d, intr, voxel: float, depth_trunc: float):
+        self.o3d, self.voxel, self.trunc = o3d, voxel, depth_trunc
+        self.scale = 1.0 / intr.depth_scale
+        K = np.array([[intr.fx, 0, intr.cx], [0, intr.fy, intr.cy], [0, 0, 1]], dtype=np.float64)
+        self.tensor = hasattr(o3d, "t") and hasattr(o3d.t.geometry, "VoxelBlockGrid")
+        if self.tensor:
+            import open3d.core as o3c
+            self.o3c = o3c
+            self.dev = o3c.Device("CPU:0")
+            self.vbg = o3d.t.geometry.VoxelBlockGrid(
+                attr_names=("tsdf", "weight", "color"), attr_dtypes=(o3c.float32, o3c.float32, o3c.float32),
+                attr_channels=((1), (1), (3)), voxel_size=voxel, block_resolution=8,
+                block_count=20000, device=self.dev)   # ~200 MB to start; the hash map grows if needed
+            self.K = o3c.Tensor(K, o3c.float64)
+        else:
+            self.vol = o3d.pipelines.integration.ScalableTSDFVolume(
+                voxel_length=voxel, sdf_trunc=4.0 * voxel,
+                color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8)
+            self.cam = o3d.camera.PinholeCameraIntrinsic(intr.width, intr.height, intr.fx, intr.fy, intr.cx, intr.cy)
+
+    def integrate(self, rgb: np.ndarray, depth: np.ndarray, T_world_cam: np.ndarray) -> None:
+        o3d = self.o3d
+        ext = np.linalg.inv(T_world_cam)
+        if self.tensor:
+            o3c = self.o3c
+            d = o3d.t.geometry.Image(o3c.Tensor(np.ascontiguousarray(depth)))
+            c = o3d.t.geometry.Image(o3c.Tensor(np.ascontiguousarray(rgb)))
+            E = o3c.Tensor(ext, o3c.float64)
+            blocks = self.vbg.compute_unique_block_coordinates(d, self.K, E, self.scale, self.trunc)
+            self.vbg.integrate(blocks, d, c, self.K, self.K, E, self.scale, self.trunc)
+        else:
+            rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
+                o3d.geometry.Image(np.ascontiguousarray(rgb)), o3d.geometry.Image(np.ascontiguousarray(depth)),
+                depth_scale=self.scale, depth_trunc=self.trunc, convert_rgb_to_intensity=False)
+            self.vol.integrate(rgbd, self.cam, ext)
+
+    def write_mesh(self, path: str, min_hits: int) -> int:
+        o3d = self.o3d
+        if self.tensor:
+            mesh = self.vbg.extract_triangle_mesh(weight_threshold=float(min_hits)).to_legacy()
+        else:
+            mesh = self.vol.extract_triangle_mesh()
+        if len(mesh.triangles) == 0:
+            return 0
+        mesh.compute_vertex_normals()
+        o3d.io.write_triangle_mesh(path, mesh)
+        return len(mesh.triangles)
+
+
 def fuse_bag(bag_path: str, frame_poses: List[Tuple[float, np.ndarray]], frame_status: Dict[float, str],
              out_dir: str, stride: int = 2, voxel: float = 0.02, depth_trunc: float = 3.0,
              min_hits: int = 3, use_open3d: bool = True, max_frames: Optional[int] = None) -> dict:
@@ -88,18 +140,19 @@ def fuse_bag(bag_path: str, frame_poses: List[Tuple[float, np.ndarray]], frame_s
 
     src = RealSenseSource(playback_path=bag_path, enable_imu=False, preload_imu=False)
     intr = src.intrinsics()
-    vol = fuser = None
+    tsdf = None
     if o3d is not None:
-        vol = o3d.pipelines.integration.ScalableTSDFVolume(
-            voxel_length=voxel, sdf_trunc=4.0 * voxel,
-            color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8)
-        cam = o3d.camera.PinholeCameraIntrinsic(intr.width, intr.height, intr.fx, intr.fy, intr.cx, intr.cy)
-    else:
-        fuser = _VoxelFuser(voxel / 2.0, min_hits)
-        H, W = intr.height, intr.width
-        vv, uu = np.mgrid[0:H:2, 0:W:2]
-        xn = (uu - intr.cx) / intr.fx
-        yn = (vv - intr.cy) / intr.fy
+        try:
+            tsdf = _Tsdf(o3d, intr, voxel, depth_trunc)
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"open3d TSDF unavailable ({type(e).__name__}: {e}); voxel cloud only")
+    # the voxel-average cloud is always built too: cheap, dependency-free, and the fallback
+    # if this machine's open3d cannot produce a mesh
+    fuser = _VoxelFuser(voxel / 2.0, min_hits)
+    H, W = intr.height, intr.width
+    vv, uu = np.mgrid[0:H:2, 0:W:2]
+    xn = (uu - intr.cx) / intr.fx
+    yn = (vv - intr.cy) / intr.fy
 
     n_seen = n_used = n_lost = n_nopose = 0
     t0 = time.time()
@@ -122,19 +175,17 @@ def fuse_bag(bag_path: str, frame_poses: List[Tuple[float, np.ndarray]], frame_s
                 n_lost += 1
                 continue
             T = Ts[best]
-            if o3d is not None:
-                depth = frame.depth.copy()
-                rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
-                    o3d.geometry.Image(np.ascontiguousarray(frame.rgb)), o3d.geometry.Image(depth),
-                    depth_scale=1.0 / intr.depth_scale, depth_trunc=depth_trunc,
-                    convert_rgb_to_intensity=False)
-                vol.integrate(rgbd, cam, np.linalg.inv(T))
-            else:
-                z = frame.depth[0::2, 0::2].astype(np.float64) * intr.depth_scale
-                m = (z > 0.2) & (z < depth_trunc)
-                p = np.stack([xn[m] * z[m], yn[m] * z[m], z[m]], axis=1)
-                p = p @ T[:3, :3].T + T[:3, 3]
-                fuser.add(p, frame.rgb[0::2, 0::2][m])
+            if tsdf is not None:
+                try:
+                    tsdf.integrate(frame.rgb, frame.depth, T)
+                except Exception as e:  # noqa: BLE001
+                    log.warning(f"open3d TSDF failed ({type(e).__name__}: {e}); continuing with the voxel cloud only")
+                    tsdf = None
+            z = frame.depth[0::2, 0::2].astype(np.float64) * intr.depth_scale
+            m = (z > 0.2) & (z < depth_trunc)
+            p = np.stack([xn[m] * z[m], yn[m] * z[m], z[m]], axis=1)
+            p = p @ T[:3, :3].T + T[:3, 3]
+            fuser.add(p, frame.rgb[0::2, 0::2][m])
             n_used += 1
             if n_used % 200 == 0:
                 log.info(f"fused {n_used} frames ({n_seen} read, {time.time() - t0:.0f}s)")
@@ -146,21 +197,21 @@ def fuse_bag(bag_path: str, frame_poses: List[Tuple[float, np.ndarray]], frame_s
 
     out = {"frames_read": n_seen, "frames_fused": n_used, "frames_skipped_lost": n_lost,
            "frames_without_pose": n_nopose, "voxel_m": voxel, "seconds": round(time.time() - t0, 1)}
-    if o3d is not None:
-        mesh = vol.extract_triangle_mesh()
-        mesh.compute_vertex_normals()
-        mesh_path = os.path.join(out_dir, "map_mesh.ply")
-        o3d.io.write_triangle_mesh(mesh_path, mesh)
-        pcd = vol.extract_point_cloud()
-        cloud_path = os.path.join(out_dir, "map_cloud.ply")
-        o3d.io.write_point_cloud(cloud_path, pcd)
-        out.update({"method": "tsdf (open3d)", "mesh": mesh_path, "cloud": cloud_path,
-                    "n_triangles": len(mesh.triangles), "n_points": len(pcd.points)})
-    else:
-        pts, rgb = fuser.result()
-        cloud_path = os.path.join(out_dir, "map_cloud.ply")
-        _write_ply_points(cloud_path, pts, rgb)
-        out.update({"method": f"voxel average ({voxel / 2 * 100:.0f} cm, >= {min_hits} frames)",
-                    "cloud": cloud_path, "n_points": int(pts.shape[0])})
+    pts, rgb = fuser.result()
+    cloud_path = os.path.join(out_dir, "map_cloud.ply")
+    _write_ply_points(cloud_path, pts, rgb)
+    out.update({"method": f"voxel average ({voxel / 2 * 100:.0f} cm, >= {min_hits} frames)",
+                "cloud": cloud_path, "n_points": int(pts.shape[0])})
+    if tsdf is not None:
+        try:
+            mesh_path = os.path.join(out_dir, "map_mesh.ply")
+            n_tri = tsdf.write_mesh(mesh_path, min_hits)
+            if n_tri > 0:
+                out.update({"method": out["method"] + " + tsdf mesh (open3d)", "mesh": mesh_path,
+                            "n_triangles": n_tri})
+            else:
+                log.warning("open3d produced an empty mesh; use map_cloud.ply")
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"mesh export failed ({type(e).__name__}: {e}); use map_cloud.ply")
     log.info(f"map: {out}")
     return out

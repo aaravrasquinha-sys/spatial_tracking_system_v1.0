@@ -52,6 +52,7 @@ class LoopParams:
     consist_t: float = 0.15          # cycle translation tolerance (m) ...
     consist_t_per_m: float = 0.05    # ... plus this per metre of odometry inside the cycle
     consist_r_deg: float = 4.0       # cycle rotation tolerance (deg)
+    gap_span: int = 3                # keyframes on each side of a lost-tracking gap tried against each other
     prox_rounds: int = 2
     prox_radius_m: float = 1.0
     prox_angle_deg: float = 35.0
@@ -148,12 +149,18 @@ def consistent_loops(loops: List[pgo.Edge], init: Dict[int, np.ndarray], order: 
                      p: LoopParams) -> List[pgo.Edge]:
     """Keep a loop if a second loop near it on both ends agrees through odometry, or it is strong."""
     keep = []
+    oa = np.array([order[L.a] for L in loops])
+    srt = np.argsort(oa, kind="stable")
+    oa_sorted = oa[srt]
     for i, L in enumerate(loops):
         if L.meta.get("inliers", 0) >= p.strong_inliers:
             keep.append(L)
             continue
         ok = False
-        for j, M in enumerate(loops):
+        lo = int(np.searchsorted(oa_sorted, order[L.a] - p.consist_window, side="left"))
+        hi = int(np.searchsorted(oa_sorted, order[L.a] + p.consist_window, side="right"))
+        for j in srt[lo:hi]:
+            M = loops[j]
             if i == j:
                 continue
             if abs(order[L.a] - order[M.a]) > p.consist_window or abs(order[L.b] - order[M.b]) > p.consist_window:
@@ -232,12 +239,33 @@ def close_loops(nodes: Dict[int, object], init: Dict[int, np.ndarray], base_edge
     fixed = [ids[0]]
     stats: dict = {}
 
+    tried: set = set()
+    # 0. lost-tracking gaps: a bridge link is a guess (no measured motion), and with nothing else
+    # tying the two sides together everything between two gaps floats. Try to measure it directly:
+    # the keyframes just before and just after a short gap usually still see the same scene.
+    gap_pairs = []
+    for e in base_edges:
+        if e.kind != "bridge" or e.a not in order or e.b not in order:
+            continue
+        ka, kb = order[e.a], order[e.b]
+        for x in ids[max(0, ka - p.gap_span):ka + 1]:
+            for y in ids[kb:kb + p.gap_span + 1]:
+                if x != y:
+                    gap_pairs.append((min(x, y), max(x, y), 1.0))
+    gap_pairs = list({(a, b): (a, b, s) for a, b, s in gap_pairs}.values())
+    gap_loops = verify_pairs(gap_pairs, nodes, verifier, p, tried)
+    for L in gap_loops:
+        L.meta["gap"] = True
+    bridged = {(order[e.a]) for e in base_edges if e.kind == "bridge"}
+    stats["bridges"] = len(bridged)
+    stats["bridge_gap_pairs_tried"] = len(gap_pairs)
+    stats["bridge_gap_links_verified"] = len(gap_loops)
+
     bow_ids, V = build_bow(nodes, p)
     pairs = appearance_candidates(bow_ids, V, times, p)
     stats["appearance_candidates"] = len(pairs)
-    tried: set = set()
-    loops = verify_pairs(pairs, nodes, verifier, p, tried)
-    stats["appearance_loops_verified"] = len(loops)
+    loops = gap_loops + verify_pairs(pairs, nodes, verifier, p, tried)
+    stats["appearance_loops_verified"] = len(loops) - len(gap_loops)
 
     poses = init
     kept, weights = [], []
