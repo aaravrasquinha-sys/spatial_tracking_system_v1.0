@@ -187,6 +187,17 @@ class Pipeline:
             # keyframe -- pyslam/imu/bridge.py treats that as "no velocity
             # estimate available" and degrades the bridge's translation
             # block to Phase 0's identity value, not a crash.
+        # Gyro-aided tracking (cfg.gyro_aid_*): body-frame gyro rotation accumulated since the current
+        # reference keyframe, plus the self-check state.
+        self._gyro_R_body: np.ndarray = np.eye(3)
+        self._gyro_last_t: Optional[float] = None
+        self._gyro_ref_t: Optional[float] = None
+        self._gyro_window_ok: bool = False
+        self._gyro_bias: np.ndarray = np.zeros(3)
+        self._gyro_bias_done: bool = False
+        self._gyro_state: str = "verifying"        # "verifying" | "trusted" | "disabled"
+        self._gyro_verify_diffs: list = []
+        self.gyro_action_counts: dict = {"override": 0, "rescue": 0, "coast": 0, "weak": 0}
         self._g_world: Optional[np.ndarray] = None  # WP-P5.2: established
             # once, from the first quasi-static keyframe-to-keyframe
             # window (see _try_gravity_prior); stays None (feature
@@ -288,7 +299,15 @@ class Pipeline:
             if self.vocab is not None:
                 sig.word_ids = assign_words(sig.desc, self.vocab)
 
-            odom_res = self.odometry.update(sig, frame)
+            if self.cfg.gyro_aid_enabled and isinstance(self.odometry, VisualOdometry):
+                R_gyro_cam, gyro_dt = self._gyro_step(frame, t_start, result)
+                odom_res = self.odometry.update(sig, frame, R_ref_cur_gyro=R_gyro_cam,
+                                                gyro_trusted=(self._gyro_state == "trusted"),
+                                                gyro_dt=gyro_dt)
+                self._gyro_after_update(odom_res, frame, result)
+            else:
+                odom_res = self.odometry.update(sig, frame)
+            status_after_update = self.odometry.status  # recorded BEFORE a LOST recovery resets it to OK
             result.odom_trajectory.append((frame.t, odom_res.pose.copy()))
 
             # WP-M: maintain a short window of recent successful-tracking
@@ -550,6 +569,11 @@ class Pipeline:
                 "status": self.odometry.status, "session_id": self._session_id,
                 "is_keyframe": bool(self.odometry.last_keyframe_created),
             })
+            if self.odometry.last_keyframe_created:
+                # the reference keyframe is now THIS frame: restart the gyro rotation from here
+                self._gyro_R_body = np.eye(3)
+                self._gyro_ref_t = frame.t
+                self._gyro_window_ok = True
 
             n += 1
             duration_ms = (time.perf_counter() - t0) * 1000.0
@@ -583,8 +607,10 @@ class Pipeline:
                 "duration_ms": duration_ms,
                 "mem_duration_ms": mem_duration_ms,
                 "enforce_budget_ms": enforce_ms,
-                "odom_status": self.odometry.status,
+                "odom_status": status_after_update,
                 "n_inliers": odom_res.n_inliers,
+                "gyro_action": getattr(self.odometry, "last_gyro_action", None),
+                "gyro_diff_deg": getattr(self.odometry, "last_gyro_diff_deg", None),
                 "wm_size": len(self.memory.working_set()),
                 "keyframe": self.odometry.last_keyframe_created,
                 "kf_reason": (getattr(self.odometry, "last_keyframe_reason", None)
@@ -596,6 +622,82 @@ class Pipeline:
 
             if max_frames is not None and n >= max_frames:
                 break
+
+        if self.cfg.gyro_aid_enabled:
+            msg = (f"gyro aid: state={self._gyro_state}, bias={np.degrees(self._gyro_bias).round(3)} deg/s, "
+                   f"rotation overridden on {self.gyro_action_counts['override']} frames, "
+                   f"rescued {self.gyro_action_counts['rescue']} frames, "
+                   f"weak-view rotation from gyro on {self.gyro_action_counts['weak']} frames, "
+                   f"coasted {self.gyro_action_counts['coast']} lost frames")
+            log.info(msg)
+            result.status_log.append(msg)
+
+    # ------------------------------------------------------------------ gyro-aided tracking
+    def _gyro_step(self, frame, t_start, result):
+        """Integrate this frame's gyro samples into the rotation since the reference keyframe.
+        Returns (R_ref_cur in the CAMERA frame or None if the gyro window has a hole, seconds since
+        the reference keyframe)."""
+        cfg = self.cfg
+        if not self._gyro_bias_done and t_start is not None and frame.t - t_start > cfg.gravity_align_hold_s:
+            self._gyro_bias_done = True
+            win = [w for w in result.startup_imu_window if w is not None and w.shape[0] > 0]
+            if win:
+                g = np.concatenate(win, axis=0)[:, 1:4]
+                mean = g.mean(axis=0)
+                # still = no rotation beyond noise; a real gyro bias is well under 1 deg/s
+                if (g.shape[0] >= 20 and np.linalg.norm(mean) < 0.02
+                        and np.max(np.linalg.norm(g - mean, axis=1)) < 0.05):
+                    self._gyro_bias = mean
+                    log.info(f"gyro aid: bias from the still start = {np.degrees(mean).round(3)} deg/s")
+        if self._gyro_ref_t is None:
+            self._gyro_ref_t = frame.t
+            self._gyro_window_ok = True
+        imu = frame.imu
+        if imu is None or imu.shape[0] == 0:
+            if self._gyro_last_t is None or frame.t - self._gyro_last_t > 0.05:
+                self._gyro_window_ok = False
+        else:
+            for row in imu:
+                t = float(row[0])
+                if self._gyro_last_t is not None:
+                    dt = t - self._gyro_last_t
+                    if 0.0 < dt < 0.05:
+                        self._gyro_R_body = self._gyro_R_body @ lie.so3_exp((row[1:4] - self._gyro_bias) * dt)
+                    elif dt >= 0.05:
+                        self._gyro_window_ok = False
+                self._gyro_last_t = t
+        if not self._gyro_window_ok or self._gyro_last_t is None:
+            return None, 0.0
+        Rbc = self._R_body_cam
+        return Rbc.T @ self._gyro_R_body @ Rbc, float(frame.t - self._gyro_ref_t)
+
+    def _gyro_after_update(self, odom_res, frame, result) -> None:
+        cfg = self.cfg
+        od = self.odometry
+        action = getattr(od, "last_gyro_action", None)
+        if action in self.gyro_action_counts:
+            self.gyro_action_counts[action] += 1
+        if self._gyro_state != "verifying":
+            return
+        diff, vis = getattr(od, "last_gyro_diff_deg", None), getattr(od, "last_vis_rot_deg", None)
+        if diff is None or vis is None or odom_res.n_inliers < 60 or vis < 2.0:
+            return
+        self._gyro_verify_diffs.append(diff)
+        if len(self._gyro_verify_diffs) < int(cfg.gyro_aid_verify_samples):
+            return
+        med = float(np.median(self._gyro_verify_diffs))
+        if med <= cfg.gyro_aid_verify_max_median_deg:
+            self._gyro_state = "trusted"
+            msg = (f"[t={frame.t:.2f}] gyro aid ON: gyro and camera agree (median difference {med:.2f} deg "
+                   f"over {len(self._gyro_verify_diffs)} well-tracked turning frames)")
+            log.info(msg)
+        else:
+            self._gyro_state = "disabled"
+            msg = (f"[t={frame.t:.2f}] gyro aid OFF for this run: gyro and camera DISAGREE (median "
+                   f"{med:.2f} deg > {cfg.gyro_aid_verify_max_median_deg} deg) -- check the IMU-to-camera "
+                   f"rotation / timestamps")
+            log.warning(msg)
+        result.status_log.append(msg)
 
     def _uf_find(self, x: int) -> int:
         root = x

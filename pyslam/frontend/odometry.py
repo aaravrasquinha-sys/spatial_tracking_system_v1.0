@@ -41,9 +41,17 @@ class VisualOdometry:
         self.status = "OK"
         self._initialised = False
         self._frames_since_kf = 0     # Batch-A: tracked frames since the last keyframe (keyframe_min_gap_frames)
+        # Gyro-aided tracking (cfg.gyro_aid_*): last measured ref<-cur translation (used to build the
+        # gyro-based motion prediction) and per-frame diagnostics the pipeline reads back.
+        self._last_t_ref_cur: np.ndarray = np.zeros(3)
+        self._t_hist: list = []   # up to 2 recent (frame time, ref<-cur translation) vs the CURRENT reference
+        self.last_gyro_diff_deg: Optional[float] = None   # |PnP rotation - gyro rotation| this frame
+        self.last_vis_rot_deg: Optional[float] = None     # PnP rotation since the reference keyframe
+        self.last_gyro_action: Optional[str] = None       # None | "override" | "rescue" | "coast"
 
     # ------------------------------------------------------------------
-    def _match(self, sig_query: Signature, sig_train: Signature, T_train_query_predicted=None, K=None):
+    def _match(self, sig_query: Signature, sig_train: Signature, T_train_query_predicted=None, K=None,
+               trans_slack_m: float = 0.0):
         """WP-LIVE 4.7: optional prediction-gated matching. When a
         predicted relative pose is available (constant-velocity or
         gyro-integrated, same sources pyslam/imu/bridge.py already
@@ -72,10 +80,11 @@ class VisualOdometry:
                 good.append((m.queryIdx, train_valid_idx[m.trainIdx]))
         if T_train_query_predicted is None or K is None or len(good) == 0:
             return good
-        return self._prediction_gate(good, sig_query, sig_train, T_train_query_predicted, K)
+        return self._prediction_gate(good, sig_query, sig_train, T_train_query_predicted, K,
+                                     trans_slack_m=trans_slack_m)
 
     def _prediction_gate(self, matches, sig_query, sig_train, T_train_query, K,
-                          max_reproj_px: float = None):
+                          max_reproj_px: float = None, trans_slack_m: float = 0.0):
         """Reprojects each train-side 3D point (train camera frame)
         into the QUERY image using the predicted train<-query transform
         inverted, and drops matches whose predicted pixel is far from
@@ -103,7 +112,13 @@ class VisualOdometry:
         actual = sig_query.kp[q_idx]
         err = np.full(len(matches), np.inf)
         err[in_front] = np.hypot(px[in_front] - actual[in_front, 0], py[in_front] - actual[in_front, 1])
-        keep = err < max_reproj_px
+        # trans_slack_m (gyro-aided tracking): the predicted ROTATION is accurate but the predicted
+        # translation is only a guess, so allow each point the pixel shift a translation error of
+        # trans_slack_m would cause at its depth (near points move more than far ones).
+        thr = np.full(len(matches), float(max_reproj_px))
+        if trans_slack_m > 0.0:
+            thr[in_front] += fx * trans_slack_m / z[in_front]
+        keep = err < thr
         filtered = [m for m, k in zip(matches, keep) if k]
         # Fail open: if the prediction gate would leave too few matches
         # to even attempt PnP, trust the ORIGINAL (ungated) match set
@@ -148,9 +163,74 @@ class VisualOdometry:
         T_train_query = lie.make_T(R, tvec.reshape(3))  # maps ref-frame pts into query(cam) frame
         return T_train_query, inlier_idx
 
+    def _solve_translation_fixed_rotation(self, obj_pts: np.ndarray, img_pts: np.ndarray,
+                                          R_cur_ref: np.ndarray, K: np.ndarray, reproj_px: float,
+                                          min_inliers: int):
+        """Gyro-aided tracking: the rotation is known (from the gyro), solve only the translation
+        t in p_cur = R_cur_ref @ p_ref + t from 3D(ref)-2D(cur) matches. Each match gives two LINEAR
+        equations in t (normalised image coordinates), so a 2-match RANSAC + least-squares refine is
+        enough. Returns (T_cur_ref, inlier_idx) like _pnp(), or None."""
+        n = obj_pts.shape[0]
+        if n < max(min_inliers, 3):
+            return None
+        fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+        q = (R_cur_ref @ obj_pts.T).T
+        xn = (img_pts[:, 0] - cx) / fx
+        yn = (img_pts[:, 1] - cy) / fy
+        A = np.zeros((2 * n, 3))
+        b = np.zeros(2 * n)
+        A[0::2, 0] = 1.0; A[0::2, 2] = -xn; b[0::2] = xn * q[:, 2] - q[:, 0]
+        A[1::2, 1] = 1.0; A[1::2, 2] = -yn; b[1::2] = yn * q[:, 2] - q[:, 1]
+
+        def _inliers(t):
+            p = q + t
+            z = p[:, 2]
+            ok = z > 0.05
+            err = np.full(n, np.inf)
+            err[ok] = np.hypot(p[ok, 0] / z[ok] * fx + cx - img_pts[ok, 0],
+                               p[ok, 1] / z[ok] * fy + cy - img_pts[ok, 1])
+            return np.where(err < reproj_px)[0]
+
+        rng = np.random.default_rng(n)
+        best = np.zeros(0, dtype=int)
+        for _ in range(200):
+            i, j = rng.choice(n, 2, replace=False)
+            rows = [2 * i, 2 * i + 1, 2 * j, 2 * j + 1]
+            t, *_ = np.linalg.lstsq(A[rows], b[rows], rcond=None)
+            inl = _inliers(t)
+            if inl.size > best.size:
+                best = inl
+        if best.size < min_inliers:
+            return None
+        for _ in range(2):  # refine on all inliers, then re-collect them
+            rows = np.stack([2 * best, 2 * best + 1], 1).reshape(-1)
+            t, *_ = np.linalg.lstsq(A[rows], b[rows], rcond=None)
+            inl = _inliers(t)
+            if inl.size < min_inliers:
+                return None
+            best = inl
+        return lie.make_T(R_cur_ref, t), best
+
+    def _predict_t_ref_cur(self, t_now: float) -> np.ndarray:
+        """Constant-velocity guess of the ref<-cur translation at t_now (relative to the current
+        reference keyframe); zero right after a new keyframe."""
+        if not self._t_hist:
+            return np.zeros(3)
+        t1, p1 = self._t_hist[-1]
+        if len(self._t_hist) < 2:
+            return p1.copy()
+        t0, p0 = self._t_hist[0]
+        if t1 - t0 <= 1e-6:
+            return p1.copy()
+        return p1 + (p1 - p0) * (t_now - t1) / (t1 - t0)
+
+    def _gyro_threshold_deg(self, gyro_dt: float) -> float:
+        return float(self.cfg.gyro_aid_max_deg + self.cfg.gyro_aid_deg_per_s * max(gyro_dt, 0.0))
+
     # ------------------------------------------------------------------
-    def update(self, sig: Signature, frame: Frame, T_ref_query_predicted: Optional[np.ndarray] = None
-               ) -> OdomResult:
+    def update(self, sig: Signature, frame: Frame, T_ref_query_predicted: Optional[np.ndarray] = None,
+               R_ref_cur_gyro: Optional[np.ndarray] = None, gyro_trusted: bool = False,
+               gyro_dt: float = 0.0) -> OdomResult:
         """T_ref_query_predicted (WP-LIVE 4.7): an optional predicted
         ref<-query transform (constant-velocity extrapolation or gyro
         integration -- pyslam/imu/bridge.py's own building blocks,
@@ -159,7 +239,14 @@ class VisualOdometry:
         None (the default) reproduces the original, ungated matcher
         exactly -- existing call sites need no change."""
         self.last_keyframe_created = False
+        self.last_gyro_diff_deg = None
+        self.last_vis_rot_deg = None
+        self.last_gyro_action = None
         K = frame.intr.K()
+        # Gyro-aided tracking: only when the pipeline says the gyro has passed its self-check.
+        use_gyro = bool(gyro_trusted and R_ref_cur_gyro is not None)
+        if use_gyro and T_ref_query_predicted is None and self.cfg.gyro_aid_gate:
+            T_ref_query_predicted = lie.make_T(R_ref_cur_gyro, self._predict_t_ref_cur(frame.t))
 
         if not self._initialised:
             self.ref_sig = sig
@@ -175,18 +262,48 @@ class VisualOdometry:
             return OdomResult(pose=self.cur_pose.copy(), T_rel=np.eye(4),
                                info=np.eye(6) * 1e6, n_inliers=0, status="OK")
 
-        matches = self._match(sig, self.ref_sig, T_train_query_predicted=T_ref_query_predicted, K=K)
-        if len(matches) < self.cfg.odom_min_inliers:
-            return self._handle_lost()
+        matches = self._match(sig, self.ref_sig, T_train_query_predicted=T_ref_query_predicted, K=K,
+                              trans_slack_m=(self.cfg.gyro_aid_gate_trans_m if use_gyro else 0.0))
+        min_needed = min(self.cfg.odom_min_inliers, self.cfg.gyro_aid_min_inliers) if use_gyro \
+            else self.cfg.odom_min_inliers
+        if len(matches) < min_needed:
+            return self._handle_lost(R_ref_cur_gyro if (use_gyro and self.cfg.gyro_aid_coast) else None)
 
         q_idx = np.array([m[0] for m in matches])
         t_idx = np.array([m[1] for m in matches])
         obj_pts = self.ref_sig.kp3d[t_idx]          # 3D points in reference keyframe's camera frame
         img_pts = sig.kp[q_idx]
 
-        result = self._pnp(obj_pts, img_pts, K, self.cfg.odom_reproj_px)
+        result = self._pnp(obj_pts, img_pts, K, self.cfg.odom_reproj_px) \
+            if len(matches) >= self.cfg.odom_min_inliers else None
+        if result is not None and R_ref_cur_gyro is not None:
+            # compare PnP's rotation (ref<-cur) with the gyro's
+            R_ref_cur_vis = result[0][:3, :3].T
+            dR = R_ref_cur_vis.T @ R_ref_cur_gyro
+            self.last_gyro_diff_deg = float(np.degrees(np.arccos(np.clip((np.trace(dR) - 1) / 2, -1, 1))))
+            self.last_vis_rot_deg = float(np.degrees(np.arccos(
+                np.clip((np.trace(R_ref_cur_vis) - 1) / 2, -1, 1))))
+            if use_gyro and self.cfg.gyro_aid_override and \
+                    self.last_gyro_diff_deg > self._gyro_threshold_deg(gyro_dt):
+                result = None                    # PnP disagrees with the gyro: do not trust it
+                self.last_gyro_action = "override"
+            elif use_gyro and len(result[1]) < int(self.cfg.gyro_aid_weak_inliers):
+                # weak view (few inliers): the gyro's rotation is more accurate than PnP's here
+                weak = self._solve_translation_fixed_rotation(
+                    obj_pts, img_pts, R_ref_cur_gyro.T, K, self.cfg.odom_reproj_px,
+                    int(self.cfg.gyro_aid_min_inliers))
+                if weak is not None:
+                    result = weak
+                    self.last_gyro_action = "weak"
+        if result is None and use_gyro and self.cfg.gyro_aid_override:
+            # rotation from the gyro, translation from the matches
+            result = self._solve_translation_fixed_rotation(
+                obj_pts, img_pts, R_ref_cur_gyro.T, K, self.cfg.odom_reproj_px,
+                int(self.cfg.gyro_aid_min_inliers))
+            if result is not None and self.last_gyro_action is None:
+                self.last_gyro_action = "rescue"
         if result is None:
-            return self._handle_lost()
+            return self._handle_lost(R_ref_cur_gyro if (use_gyro and self.cfg.gyro_aid_coast) else None)
         # solvePnPRansac(objectPoints=ref-frame 3D, imagePoints=cur-frame 2D)
         # returns the pose of the OBJECT (ref) in the CAMERA (cur) frame,
         # i.e. it maps points FROM ref INTO cur: p_cur = T_cur_ref @ p_ref.
@@ -211,6 +328,8 @@ class VisualOdometry:
         # world<-cur = world<-ref @ ref<-cur = self.ref_pose @ T_ref_cur.
         self.cur_pose = self.ref_pose @ T_ref_cur
         T_rel = T_ref_cur
+        self._last_t_ref_cur = T_ref_cur[:3, 3].copy()
+        self._t_hist = (self._t_hist + [(frame.t, self._last_t_ref_cur.copy())])[-2:]
 
         info = np.eye(6) * (n_inliers / max(len(matches), 1)) * 100.0
         if self.cfg.use_hessian_info:
@@ -255,15 +374,24 @@ class VisualOdometry:
             self.last_keyframe_link_inliers = n_inliers
             self.ref_sig = sig
             self.ref_pose = self.cur_pose.copy()
+            self._last_t_ref_cur = np.zeros(3)
+            self._t_hist = []
 
         return OdomResult(pose=self.cur_pose.copy(), T_rel=T_rel, info=info,
                            n_inliers=n_inliers, status="OK")
 
-    def _handle_lost(self) -> OdomResult:
+    def _handle_lost(self, R_ref_cur_gyro: Optional[np.ndarray] = None) -> OdomResult:
         self._lost_streak += 1
         if self._lost_streak >= self.cfg.lost_consecutive_frames:
             self.status = "LOST"
-        return OdomResult(pose=self.cur_pose.copy(), T_rel=np.eye(4),
+        T_rel = np.eye(4)
+        if R_ref_cur_gyro is not None:
+            # Gyro-aided tracking: keep turning with the gyro instead of freezing; position stays at the
+            # last measured offset from the reference keyframe.
+            T_rel = lie.make_T(R_ref_cur_gyro, self._last_t_ref_cur)
+            self.cur_pose = self.ref_pose @ T_rel
+            self.last_gyro_action = "coast"
+        return OdomResult(pose=self.cur_pose.copy(), T_rel=T_rel,
                            info=np.eye(6) * 1e-6, n_inliers=0, status=self.status)
 
     def force_new_keyframe(self, sig: Signature) -> None:
@@ -272,6 +400,8 @@ class VisualOdometry:
         against WM is a later-phase upgrade)."""
         self.ref_sig = sig
         self.ref_pose = self.cur_pose.copy()
+        self._last_t_ref_cur = np.zeros(3)
+        self._t_hist = []
         self._lost_streak = 0
         self._frames_since_kf = 0
         self.status = "OK"

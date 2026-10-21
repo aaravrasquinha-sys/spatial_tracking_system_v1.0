@@ -84,8 +84,12 @@ class RealSenseSource:
     def __init__(self, width: int = 640, height: int = 480, fps: int = 30,
                  enable_imu: bool = True, serial: Optional[str] = None,
                  record_path: Optional[str] = None, playback_path: Optional[str] = None,
-                 imu_capture_mode: str = "callback"):
+                 imu_capture_mode: str = "callback", preload_imu: bool = True):
         """
+        preload_imu (playback only): read EVERY accel/gyro sample from the
+        recording first (pyslam/sensors/imu_preload.py). Without it the SDK's
+        frame syncer passes on only ~1 gyro sample per video frame.
+
         imu_capture_mode (WP-J3, Orin port): "callback" (default) or
         "synced".
           - "synced" is the original Phase-0 behaviour: motion samples are
@@ -129,6 +133,15 @@ class RealSenseSource:
             # accel stream profile; used by the extrinsic query below in
             # preference to querying the (accel-less, in callback mode)
             # main pipeline profile.
+
+        self._imu_pre = None  # (gyro, accel) arrays when the playback IMU was preloaded
+        if playback_path is not None and enable_imu and preload_imu:
+            try:
+                from pyslam.sensors.imu_preload import preload_imu as _preload
+                self._imu_pre = _preload(playback_path)
+            except Exception as e:  # noqa: BLE001 -- fall back to the old behaviour, never crash
+                log.warning(f"IMU preload failed ({e}); using the frame-synced IMU samples only.")
+                self._imu_pre = None
 
         self.pipeline = rs.pipeline()
         cfg = rs.config()
@@ -457,7 +470,7 @@ class RealSenseSource:
                 if self._playback:
                     log.info("Playback reached end of file.")
                 return
-            if self.enable_imu and not self._imu_callback_active:
+            if self.enable_imu and not self._imu_callback_active and self._imu_pre is None:
                 self._drain_motion(frames)  # 'synced' mode only -- in 'callback'
                     # mode, samples already arrive via the SDK callback thread
                     # (see _start_imu_callback); draining here too would be
@@ -487,7 +500,11 @@ class RealSenseSource:
 
             imu = None
             if self.enable_imu and self._prev_t is not None:
-                imu = self._pair_imu_since(self._prev_t, t)
+                if self._imu_pre is not None:
+                    from pyslam.sensors.imu_preload import pair_preloaded
+                    imu = pair_preloaded(self._imu_pre[0], self._imu_pre[1], self._prev_t, t)
+                else:
+                    imu = self._pair_imu_since(self._prev_t, t)
             self._prev_t = t
 
             yield Frame(t=t, rgb=rgb, depth=depth, intr=self.intr, imu=imu,

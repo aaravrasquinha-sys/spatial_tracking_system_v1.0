@@ -516,6 +516,29 @@ class Config:
     lost_pause_max_candidates: int = 8   # best-scoring keyframes (out of the whole map) that get a full geometric check
     lost_pause_min_inliers: int = 40     # stricter than local_reloc_min_inliers: this search can see the whole map
     lost_pause_timeout_s: float = 0.0    # 0 = never give up (single map). >0 = after this long, fall back to the old behaviour
+    # --- Gyro-aided tracking (offline mapping). OFF by default = the previous behaviour.
+    # The gyro's rotation since the reference keyframe is used three ways:
+    #   1. matches that disagree with the gyro-predicted motion are dropped before PnP (repetitive
+    #      texture such as window grilles produces wrong matches that PnP otherwise accepts);
+    #   2. if PnP's rotation still disagrees with the gyro by more than
+    #      gyro_aid_max_deg + gyro_aid_deg_per_s * (seconds since the reference keyframe), the gyro
+    #      rotation is kept and only the translation is re-solved from the matches;
+    #   3. while tracking fails (blank walls), the camera pose keeps turning with the gyro instead of
+    #      freezing.
+    # Self-check: nothing is overridden until gyro_aid_verify_samples well-tracked frames have shown that
+    # the gyro and the camera agree (median difference <= gyro_aid_verify_max_median_deg). If they do not
+    # (wrong IMU/camera rotation, bad timestamps) the feature switches itself off for the run and says so.
+    gyro_aid_enabled: bool = False
+    gyro_aid_max_deg: float = 2.0
+    gyro_aid_deg_per_s: float = 1.0
+    gyro_aid_verify_samples: int = 30
+    gyro_aid_verify_max_median_deg: float = 1.0
+    gyro_aid_min_inliers: int = 15      # translation re-solve needs at least this many agreeing matches
+    gyro_aid_gate: bool = False         # use 1. (drop matches that disagree with the predicted motion)
+    gyro_aid_gate_trans_m: float = 0.05 # translation guess error the gate tolerates (pixels allowed grow for near points)
+    gyro_aid_override: bool = True      # use 2. (replace a PnP rotation that disagrees with the gyro)
+    gyro_aid_coast: bool = True         # use 3. (keep turning with the gyro while tracking fails)
+    gyro_aid_weak_inliers: int = 0      # >0: below this many PnP inliers, take the rotation from the gyro
     # --- Batch-B: backend catch-up. If the frame queue to the backend holds at least this many frames,
     # every second ordinary frame is skipped (keyframe frames are never skipped) until it drains to half.
     # 0 = off.
