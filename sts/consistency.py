@@ -156,6 +156,12 @@ def check_phase_b(site: SiteConfig, cam_id: str, m4_cfg_path: Optional[Path] = N
                 str(pb.get("calibration_path")))
         rep.add("M4 walkable grid is this site's walkable.json", Path(pb.get("walkable_grid_path", "")).resolve() == wp.resolve(),
                 str(pb.get("walkable_grid_path")))
+        ident = m4.get("identity") or {}
+        if ident.get("enabled"):   # R1: identity runs degraded (no re-identification) without these -- warn, never block
+            for key, label in (("reference_depth_path", "reference depth"), ("static_capture_path", "static capture (colour reference)")):
+                ip = ident.get(key) or ""
+                rep.add(f"identity {label} exists", bool(ip) and Path(ip).exists(),
+                        f"{ip or '(unset)'}: identity will give every track a new person id", severity="warn")
     if present_cfg_path is not None:
         pr = _load_json(Path(present_cfg_path))
         sc = pr.get("scene", {})

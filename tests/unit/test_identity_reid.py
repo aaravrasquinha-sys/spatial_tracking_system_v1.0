@@ -101,3 +101,28 @@ def test_no_scene_keeps_phase1_behaviour():
     rng = np.random.default_rng(4)
     v = _run(eng, [(1, ALICE, 3.0, 0.1, np.pi)], 0.0, 2, rng)
     assert v[1].state == "new" and eng.counters["extractions"] == 0
+
+
+# ---------------------------------------------------------------- loading the M2 anchor-bundle references
+def test_load_scene_reads_the_anchor_bundle_formats(tmp_path):
+    from poi_localization.identity.observer import load_scene
+    geom = SCENE.geom
+    ref = ROOM.depth.astype(np.float32)
+    rp, sp = tmp_path / "cam0_reference_depth.npz", tmp_path / "static_capture.npz"
+    np.savez_compressed(rp, depth_med=ref, stable=np.ones(ref.shape, bool))
+    np.savez_compressed(sp, depth_med=ref, depth_mad=np.full(ref.shape, 0.004, np.float32), rgb_med=ROOM.rgb,
+                        valid_frac=np.ones(ref.shape, np.float32))
+    deg = []
+    s = load_scene(geom, str(rp), str(sp), deg)
+    assert s is not None and s.ref_rgb is not None and s.ref_mad is not None and s.ref_stable.all() and deg == []
+    # colour reference captured without colour (all zeros) -> no photometric correction, still usable
+    np.savez_compressed(sp, depth_med=ref, depth_mad=np.zeros(ref.shape, np.float32), rgb_med=np.zeros_like(ROOM.rgb))
+    deg = []
+    s = load_scene(geom, str(rp), str(sp), deg)
+    assert s is not None and s.ref_rgb is None and "no_photometric_reference" in deg
+    # wrong resolution / missing file -> no scene, with the reason
+    np.savez_compressed(rp, depth_med=ref[::2, ::2], stable=np.ones((240, 320), bool))
+    deg = []
+    assert load_scene(geom, str(rp), str(sp), deg) is None and deg[0].startswith("reference_depth_shape_mismatch")
+    deg = []
+    assert load_scene(geom, str(tmp_path / "nope.npz"), "", deg) is None and deg == ["no_reference_depth"]

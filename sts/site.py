@@ -238,6 +238,9 @@ class SiteConfig:
     def reference_depth_path(self, cam_id: str) -> Path:
         return self.anchor_dir(cam_id) / f"{cam_id}_reference_depth.npz"
 
+    def static_capture_path(self, cam_id: str) -> Path:
+        return self.anchor_dir(cam_id) / "static_capture.npz"
+
     def walkable_path(self, cam_id: str = "cam0") -> Path:
         return self.anchor_dir(cam_id) / "walkable.json"
 

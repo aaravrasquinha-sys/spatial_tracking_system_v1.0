@@ -25,7 +25,7 @@ from poi_localization.identity.config import IdentityConfig
 from poi_localization.identity.extract_appearance import n_bins
 from poi_localization.identity.gallery.base import BaseGalleryBackend
 from poi_localization.identity.gallery.memory import InMemoryGallery
-from poi_localization.identity.observer import Observation, OtherTrack, Scene, depth_to_metres, observe
+from poi_localization.identity.observer import Observation, OtherTrack, Scene, depth_to_metres, load_scene, observe
 from poi_localization.identity.profile import AppearanceAccumulator, StructureModel
 from poi_localization.identity.room_geometry import RoomGeometry
 from poi_localization.identity.types import AMBIGUOUS, MATCHED, NEW, RESOLVING, IdentityView, PersonProfile
@@ -79,27 +79,16 @@ class IdentityEngine:
         if self.scene is not None or self._scene_tried or self._floor is None:
             return
         self._scene_tried = True
-        path = self.cfg.reference_depth_path
-        if not path or not Path(path).exists():
-            self.degraded.append("no_reference_depth")
-            return
         try:
-            ref = np.load(path).astype(np.float32)
-            ref[~np.isfinite(ref) | (ref <= 0)] = np.nan
-            rgb = stable = None
-            if self.cfg.static_capture_path and Path(self.cfg.static_capture_path).exists():
-                z = np.load(self.cfg.static_capture_path)
-                rgb = z["rgb"] if "rgb" in z.files else None
-                stable = z["stable"].astype(bool) if "stable" in z.files else None
             R, t, dist = self._floor
             geom = RoomGeometry(R, t, frame.intr, dist)
-            if ref.shape != (geom.height, geom.width):
-                self.degraded.append("reference_depth_shape_mismatch")
-                return
-            self.scene = Scene(geom, ref, rgb, stable)
+            self.scene = load_scene(geom, self.cfg.reference_depth_path, self.cfg.static_capture_path, self.degraded)
         except Exception as e:
             self.degraded.append(f"scene_load_failed:{type(e).__name__}")
             log.warning(f"identity scene load failed: {e}")
+        if self.scene is None:
+            log.warning(f"identity: no usable empty-room reference ({', '.join(self.degraded) or 'unknown'}); "
+                        f"every track gets a new person id (no re-identification)")
 
     # ------------------------------------------------------------------ control
     def freeze(self, reason: str) -> None:

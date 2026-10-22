@@ -29,6 +29,7 @@ class Scene:
     ref_depth: np.ndarray                       # (H, W) metres, NaN = invalid
     ref_rgb: Optional[np.ndarray] = None
     ref_stable: Optional[np.ndarray] = None
+    ref_mad: Optional[np.ndarray] = None          # per-pixel depth MAD of the empty room (static_capture)
 
 
 @dataclass
@@ -59,6 +60,48 @@ def _upright(kp, max_tilt_deg: float) -> bool:
     return bool(np.degrees(np.arctan2(abs(d[0]), d[1])) <= max_tilt_deg)
 
 
+def _npz_or_npy(path: str):
+    z = np.load(path, allow_pickle=False)
+    return z if hasattr(z, "files") else {"depth_med": z}
+
+
+def load_scene(geom: RoomGeometry, reference_depth_path: str, static_capture_path: str,
+               degraded: Optional[List[str]] = None) -> Optional[Scene]:
+    """Build the Scene from the M2 anchor bundle:
+      <cam>_reference_depth.npz : depth_med (H x W float32 m, NaN = invalid), stable (bool)   [required]
+      static_capture.npz        : rgb_med (H x W x 3 uint8), depth_mad (H x W)                  [optional]
+    A plain .npy depth image is also accepted for the reference. Returns None (and appends a reason to
+    `degraded`) when the reference is missing or does not match the live resolution."""
+    from pathlib import Path
+    degraded = degraded if degraded is not None else []
+    if not reference_depth_path or not Path(reference_depth_path).exists():
+        degraded.append("no_reference_depth")
+        return None
+    z = _npz_or_npy(reference_depth_path)
+    ref = np.asarray(z["depth_med"], dtype=np.float32).copy()
+    ref[~np.isfinite(ref) | (ref <= 0)] = np.nan
+    if ref.shape != (geom.height, geom.width):
+        degraded.append(f"reference_depth_shape_mismatch:{ref.shape[1]}x{ref.shape[0]}")
+        return None
+    stable = np.asarray(z["stable"], dtype=bool) if "stable" in getattr(z, "files", z) else None
+    rgb = mad = None
+    if static_capture_path and Path(static_capture_path).exists():
+        sc = np.load(static_capture_path, allow_pickle=False)
+        if "rgb_med" in sc.files:
+            r = np.asarray(sc["rgb_med"])
+            if r.shape == (geom.height, geom.width, 3) and r.any():          # all-zero = captured without colour
+                rgb = r.astype(np.uint8)
+            else:
+                degraded.append("static_capture_rgb_unusable")
+        if "depth_mad" in sc.files and sc["depth_mad"].shape == ref.shape:
+            mad = np.nan_to_num(np.asarray(sc["depth_mad"], dtype=np.float32), nan=0.0)
+    else:
+        degraded.append("no_static_capture")
+    if rgb is None:
+        degraded.append("no_photometric_reference")
+    return Scene(geom, ref, rgb, stable, mad)
+
+
 def depth_to_metres(frame) -> np.ndarray:
     return frame.depth.astype(np.float32) * float(frame.intr.depth_scale)
 
@@ -80,7 +123,8 @@ def observe(scene: Scene, frame, depth_m: np.ndarray, det, meas, xy: Tuple[float
     if not gate.ok_for_evidence:
         return obs
     bg_others = [(o.bbox, o.z_cam) for o in others]
-    fg = foreground_pixels(depth_m, scene.ref_depth, det.bbox, z_t, bg_others, cfg.background, stride=cfg.pixel_stride)
+    fg = foreground_pixels(depth_m, scene.ref_depth, det.bbox, z_t, bg_others, cfg.background, stride=cfg.pixel_stride,
+                           ref_mad=scene.ref_mad)
     if fg.n < 100:
         obs.flags.append("foreground_too_small")
         return obs

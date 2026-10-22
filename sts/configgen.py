@@ -82,6 +82,9 @@ def build_m4_dict(site: SiteConfig, cam_id: str, phase: Optional[str] = None,
         d["phase_b"].update(calibration_path=str(site.calibration_path(cam_id)),
                             expected_map_id=map_id or site.map.map_id,
                             walkable_grid_path=str(site.walkable_path(cam_id)))
+        if "identity" in d:   # R1: the empty-room references the identity layer needs (identity.enabled is untouched)
+            d["identity"].update(reference_depth_path=str(site.reference_depth_path(cam_id)),
+                                 static_capture_path=str(site.static_capture_path(cam_id)))
     return deep_merge(d, site.localization.overrides)
 
 
