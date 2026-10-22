@@ -110,6 +110,23 @@ class _Tsdf:
                 depth_scale=self.scale, depth_trunc=self.trunc, convert_rgb_to_intensity=False)
             self.vol.integrate(rgbd, self.cam, ext)
 
+    def extract_points(self, min_hits: int):
+        """Surface points of the TSDF (zero crossings), each seen in >= min_hits frames, with colour.
+        Unlike the raw voxel average, free space seen later carves away moving people and flying pixels,
+        and repeated passes over one wall average into ONE surface instead of a thick band."""
+        if self.tensor:
+            pcd = self.vbg.extract_point_cloud(weight_threshold=float(min_hits))
+            pts = pcd.point.positions.numpy().astype(np.float64)
+            cols = pcd.point.colors.numpy() if "colors" in pcd.point else np.full((pts.shape[0], 3), 0.63)
+        else:
+            pcd = self.vol.extract_point_cloud()
+            pts = np.asarray(pcd.points, dtype=np.float64)
+            cols = np.asarray(pcd.colors) if pcd.has_colors() else np.full((pts.shape[0], 3), 0.63)
+        cols = np.asarray(cols, dtype=np.float64)
+        if cols.size and cols.max() <= 1.0 + 1e-6:
+            cols = cols * 255.0
+        return pts, np.clip(cols, 0, 255).astype(np.uint8)
+
     def write_mesh(self, path: str, min_hits: int) -> int:
         o3d = self.o3d
         if self.tensor:
@@ -123,9 +140,28 @@ class _Tsdf:
         return len(mesh.triangles)
 
 
+def remove_depth_edges(depth: np.ndarray, rel: float) -> np.ndarray:
+    """Zero out 'flying pixels': depth pixels whose neighbour 2 px away (any of 4 directions) differs by more than
+    rel x depth. These sit between a foreground edge and the background and smear into fans of junk points."""
+    if rel <= 0:
+        return depth
+    d = depth.astype(np.float32)
+    bad = np.zeros(d.shape, dtype=bool)
+    for dy, dx in ((0, 2), (2, 0)):
+        a = d[: d.shape[0] - dy, : d.shape[1] - dx]
+        b = d[dy:, dx:]
+        jump = (np.abs(a - b) > rel * np.maximum(a, b)) & (a > 0) & (b > 0)
+        bad[: d.shape[0] - dy, : d.shape[1] - dx] |= jump
+        bad[dy:, dx:] |= jump
+    out = depth.copy()
+    out[bad] = 0
+    return out
+
+
 def fuse_bag(bag_path: str, frame_poses: List[Tuple[float, np.ndarray]], frame_status: Dict[float, str],
              out_dir: str, stride: int = 2, voxel: float = 0.02, depth_trunc: float = 3.0,
-             min_hits: int = 3, use_open3d: bool = True, max_frames: Optional[int] = None) -> dict:
+             min_hits: int = 3, use_open3d: bool = True, max_frames: Optional[int] = None,
+             edge_rel: float = 0.04) -> dict:
     from pyslam.sensors.realsense import RealSenseSource
     ts = np.array([t for t, _ in frame_poses])
     Ts = [T for _, T in frame_poses]
@@ -175,13 +211,14 @@ def fuse_bag(bag_path: str, frame_poses: List[Tuple[float, np.ndarray]], frame_s
                 n_lost += 1
                 continue
             T = Ts[best]
+            depth = remove_depth_edges(frame.depth, edge_rel)
             if tsdf is not None:
                 try:
-                    tsdf.integrate(frame.rgb, frame.depth, T)
+                    tsdf.integrate(frame.rgb, depth, T)
                 except Exception as e:  # noqa: BLE001
                     log.warning(f"open3d TSDF failed ({type(e).__name__}: {e}); continuing with the voxel cloud only")
                     tsdf = None
-            z = frame.depth[0::2, 0::2].astype(np.float64) * intr.depth_scale
+            z = depth[0::2, 0::2].astype(np.float64) * intr.depth_scale
             m = (z > 0.2) & (z < depth_trunc)
             p = np.stack([xn[m] * z[m], yn[m] * z[m], z[m]], axis=1)
             p = p @ T[:3, :3].T + T[:3, 3]
@@ -196,7 +233,7 @@ def fuse_bag(bag_path: str, frame_poses: List[Tuple[float, np.ndarray]], frame_s
             pass
 
     out = {"frames_read": n_seen, "frames_fused": n_used, "frames_skipped_lost": n_lost,
-           "frames_without_pose": n_nopose, "voxel_m": voxel, "seconds": round(time.time() - t0, 1)}
+           "frames_without_pose": n_nopose, "voxel_m": voxel, "edge_rel": edge_rel, "seconds": round(time.time() - t0, 1)}
     if n_used == 0:
         log.error(f"NO frame was fused ({n_seen} read, {n_nopose} without a pose, {n_lost} lost): "
                   f"the recording does not match this run folder (wrong --bag?) or the timestamps differ")
@@ -206,6 +243,16 @@ def fuse_bag(bag_path: str, frame_poses: List[Tuple[float, np.ndarray]], frame_s
     out.update({"method": f"voxel average ({voxel / 2 * 100:.0f} cm, >= {min_hits} frames)",
                 "cloud": cloud_path, "n_points": int(pts.shape[0])})
     if tsdf is not None:
+        try:
+            tp, tc = tsdf.extract_points(min_hits)
+            if tp.shape[0] > 0:
+                tsdf_path = os.path.join(out_dir, "map_tsdf_points.ply")
+                _write_ply_points(tsdf_path, tp, tc)
+                out.update({"tsdf_points": tsdf_path, "n_tsdf_points": int(tp.shape[0])})
+            else:
+                log.warning("open3d TSDF gave no surface points; the map bundle will use map_cloud.ply")
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"TSDF point export failed ({type(e).__name__}: {e}); the map bundle will use map_cloud.ply")
         try:
             mesh_path = os.path.join(out_dir, "map_mesh.ply")
             n_tri = tsdf.write_mesh(mesh_path, min_hits)

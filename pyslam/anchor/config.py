@@ -72,6 +72,18 @@ class AnchorConfig:
     floor_fit_min_inliers: int = 400
     floor_fit_min_extent_m: float = 0.10       # minor in-plane std of floor inliers (rejects a slice through a wall)
     require_imu: bool = True
+    # a plane is only accepted as the FLOOR if it agrees with gravity and nothing the camera sees lies below it.
+    # A camera looking at a wall often sees no floor at all; RANSAC then latches onto a sill/ledge/furniture top
+    # and the wrong height breaks the solve. When the floor is refused (and the IMU is good) the solve continues
+    # in "no-floor" mode: roll/pitch from the IMU, height from the map match, floor cross-checks skipped.
+    floor_fit_max_imu_tilt_deg: float = 5.0
+    floor_fit_below_tol_m: float = 0.06
+    floor_fit_max_below_frac: float = 0.02
+    allow_no_floor: bool = True
+    no_floor_height_span_m: float = 1.5     # heights searched above the lowest visible point
+    gate_below_floor_frac: float = 0.02     # share of the camera's points that may end up below the MAP floor
+    gate_min_observability_no_floor: float = 0.004   # without a floor in view nothing else pins the height and tilt:
+                                                     # demand clearly more geometry (one flat wall gives ~0.001)
 
     # ---- Stage 3: global search ----
     csm_res_m: float = 0.05
@@ -81,6 +93,16 @@ class AnchorConfig:
     slice_lo_m: float = 0.3                # structure slice above the floor
     slice_hi_m: float = 2.0
     csm_min_map_pts_per_cell: int = 2
+    # which map cells count as "structure" for the global search:
+    #   "count" = cells with >= csm_min_map_pts_per_cell points (the original rule). Keeps furniture, which is often
+    #             what makes a view unique, but a DENSE map with smeared clutter turns the whole room into "wall".
+    #   "tall"  = cells whose points cover at least csm_tall_min_frac of the slice height (walls, tall furniture):
+    #             immune to low clutter and smears, but blind to low furniture.
+    #   "both"  = search with both and hand every distinct peak of each to ICP; ICP fitness, colour and the gates
+    #             decide. Costs a few more ICP runs; never worse than either rule alone.
+    csm_map_mode: str = "both"
+    csm_tall_bin_m: float = 0.10
+    csm_tall_min_frac: float = 0.5
     csm_peaks_per_yaw: int = 6
     csm_top_k: int = 4                     # candidates handed to ICP
     csm_distinct_xy_m: float = 0.30

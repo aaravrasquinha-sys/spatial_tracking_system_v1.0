@@ -48,12 +48,17 @@ class Candidate:
     refined_score: Optional[float] = None
 
 
-def build_map_raster(pts_room: np.ndarray, cfg: AnchorConfig, pad_m: Optional[float] = None) -> MapRaster:
+def build_map_raster(pts_room: np.ndarray, cfg: AnchorConfig, pad_m: Optional[float] = None,
+                     mode: Optional[str] = None) -> MapRaster:
+    """mode: 'count' (cells with >= csm_min_map_pts_per_cell points) or 'tall' (cells whose points span at least
+    csm_tall_min_frac of the slice height). Default: 'count', unless cfg.csm_map_mode is 'tall'."""
+    mode = mode or ("tall" if cfg.csm_map_mode == "tall" else "count")
     r = cfg.csm_res_m
     pad = (cfg.csm_range_m + 0.5) if pad_m is None else pad_m
     z = pts_room[:, 2]
     m = (z >= cfg.slice_lo_m) & (z <= cfg.slice_hi_m)
     p = pts_room[m, :2]
+    pz = z[m]
     if p.shape[0] < 500:
         raise ValueError("structure slice of the map has < 500 points: nothing to match against")
     lo = p.min(axis=0) - pad
@@ -61,15 +66,33 @@ def build_map_raster(pts_room: np.ndarray, cfg: AnchorConfig, pad_m: Optional[fl
     lo = np.floor(lo / r) * r
     W = int(np.ceil((hi[0] - lo[0]) / r)) + 1
     H = int(np.ceil((hi[1] - lo[1]) / r)) + 1
-    cx = np.floor((p[:, 0] - lo[0]) / r).astype(int)
-    cy = np.floor((p[:, 1] - lo[1]) / r).astype(int)
+    cx = np.floor((p[:, 0] - lo[0]) / r).astype(np.int64)
+    cy = np.floor((p[:, 1] - lo[1]) / r).astype(np.int64)
     cnt = np.bincount(cy * W + cx, minlength=H * W).reshape(H, W)
     occ = cnt >= cfg.csm_min_map_pts_per_cell
+    if mode == "tall":
+        tall = tall_structure_mask(cx, cy, pz, W, H, cfg)
+        if tall.sum() < max(50, 0.05 * occ.sum()):
+            raise ValueError(f"only {int(tall.sum())} map cells of tall structure (walls): the tall raster is unusable")
+        occ = tall
+    elif mode != "count":
+        raise ValueError(f"raster mode must be 'tall' or 'count', not {mode!r}")
     dist = distance_transform_edt(~occ) * r
     L = np.exp(-0.5 * (dist / cfg.csm_sigma_m) ** 2).astype(np.float32)
     rr, cc = np.nonzero(occ)
     return MapRaster(L=L, origin=lo, res=r, bbox_cells=(int(rr.min()), int(rr.max()), int(cc.min()), int(cc.max())),
                      n_occupied=int(occ.sum()))
+
+
+def tall_structure_mask(cx: np.ndarray, cy: np.ndarray, z: np.ndarray, W: int, H: int, cfg: AnchorConfig) -> np.ndarray:
+    """Cells whose points cover at least csm_tall_min_frac of the slice height, in csm_tall_bin_m bins.
+    Walls (and tall furniture) fill the whole height; smeared depth artefacts, moving people and low clutter
+    do not, however many points they add to a dense map."""
+    nb = max(1, int(np.ceil((cfg.slice_hi_m - cfg.slice_lo_m) / cfg.csm_tall_bin_m)))
+    hb = np.clip(np.floor((z - cfg.slice_lo_m) / cfg.csm_tall_bin_m).astype(np.int64), 0, nb - 1)
+    u = np.unique((cy * W + cx) * nb + hb)
+    cov = np.bincount(u // nb, minlength=H * W).reshape(H, W)
+    return cov >= int(np.ceil(cfg.csm_tall_min_frac * nb))
 
 
 def query_slice(pts_L: np.ndarray, h: float, cfg: AnchorConfig, weights: Optional[np.ndarray] = None):

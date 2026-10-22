@@ -374,6 +374,39 @@ def check_degenerate_view_of_one_flat_wall_is_rejected():
     print(f"  view of a single flat wall + floor: REJECTED ({sorted(bad)}; weakest direction: {res.report['icp']['obs_worst_direction']}) -- OK")
 
 
+def check_camera_that_sees_no_floor_is_solved_from_the_map():
+    """A wall-mounted camera aimed into a corner sees no floor; a cabinet top below it is the only horizontal surface.
+    The cabinet top must NOT be taken as the floor (on real data that put the camera 0.3+ m too low); the solve must
+    fall back to IMU roll/pitch + height from the map, skip the floor cross-checks, and still get the pose right.
+    The same fallback must still REFUSE a view of one flat wall (nothing fixes position along it, nor height)."""
+    from pyslam.anchor.calibrate import calibrate
+    from pyslam.anchor.query_cloud import capture_to_cloud
+    from pyslam.anchor.physics_prior import physics_prior, PhysicsPriorError
+    w = default_world()
+    w.boxes.append(Box((4.8, 0.0, 0.0), (5.2, 0.6, 1.25), (220, 220, 220)))     # low cabinet in the corner
+    P, C = w.sample_surface()
+    Tmr = awkward_map_frame(seed=6)
+    mb = _mb(lie.transform_points(Tmr, P), C)
+    T = cam_pose_room(3.6, 1.0, 2.0, -45, 15)                                     # into the +x/-y corner, no floor in view
+    cap = render_capture(w, T, n_frames=25, seed=26, color=True)
+    try:
+        physics_prior(capture_to_cloud(cap, CFG)["pts"], cap.up_cam, True, CFG)
+        raise AssertionError("the cabinet top was taken as the floor")
+    except PhysicsPriorError:
+        pass
+    res = calibrate(mb, [cap], CFG)
+    et, er = _err(res, Tmr, T)
+    assert res.report["physics"]["no_floor"], "expected no-floor mode"
+    assert res.accepted and et < 0.01 and er < 0.2, \
+        f"no-floor solve: accepted={res.accepted} failed={_failed(res)} err={et * 100:.1f} cm / {er:.2f} deg"
+    T2 = cam_pose_room(3.7, 2.3, 2.0, 10, 8)                                      # one flat wall only, no floor
+    res2 = calibrate(mb, [render_capture(w, T2, n_frames=25, seed=27)], CFG)
+    assert res2.report["physics"]["no_floor"] and not res2.accepted, \
+        f"a single flat wall without floor must be REJECTED (err {_err(res2, Tmr, T2)})"
+    print(f"  no floor in view (cabinet top refused as floor): solved from the map, {et * 1000:.1f} mm / {er:.3f} deg, "
+          f"height {res.T_room_cam[2, 3]:.3f} m; one flat wall without floor: REJECTED ({sorted(_failed(res2))}) -- OK")
+
+
 # ------------------------------------------------------------------ outputs / verification
 @functools.lru_cache(maxsize=None)
 def _accepted_result():
@@ -563,6 +596,7 @@ CHECKS = [
     check_map_holes_reject_when_in_view_and_are_harmless_when_not,
     check_bad_imu_and_missing_imu_are_caught,
     check_degenerate_view_of_one_flat_wall_is_rejected,
+    check_camera_that_sees_no_floor_is_solved_from_the_map,
     check_bundle_calibration_json_matches_m4_contract_and_rejected_name,
     check_frustum_coverage_and_depth_residual_and_overlay,
     check_marker_check_passes_true_pose_and_fails_a_wrong_one,

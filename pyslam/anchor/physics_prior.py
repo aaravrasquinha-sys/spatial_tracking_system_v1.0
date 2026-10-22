@@ -74,8 +74,18 @@ def fit_floor_in_camera(pts_cam: np.ndarray, up_hint: Optional[np.ndarray], cfg:
     h = float(-off)                    # camera origin's height above the plane (n up, plane n.x = off < 0)
     if h <= 0:
         raise PhysicsPriorError(f"floor fit put the camera {h:.2f} m 'above' the floor (negative): bad fit or wrong up-hint")
+    # sanity: a real floor agrees with gravity and nothing the camera sees lies below it. A camera aimed at a wall
+    # often sees no floor; RANSAC then finds a sill, ledge or furniture top, which passes the checks above.
+    tilt = geo.angle_between_deg(n, hint)
+    if up_hint is not None and tilt > cfg.floor_fit_max_imu_tilt_deg:
+        raise PhysicsPriorError(f"the best 'floor' plane is {tilt:.1f} deg from gravity (limit {cfg.floor_fit_max_imu_tilt_deg:.0f}): "
+                                f"it is not the floor -- the camera sees little or no floor")
+    below = float(np.mean((pts_cam @ n - off) < -cfg.floor_fit_below_tol_m))
+    if below > cfg.floor_fit_max_below_frac:
+        raise PhysicsPriorError(f"{below * 100:.0f}% of the camera's points lie more than {cfg.floor_fit_below_tol_m * 100:.0f} cm "
+                                f"below the best 'floor' plane: it is a ledge/sill/furniture top, not the floor")
     return {"up_floor_cam": n, "height_m": h, "rms_m": rms, "n_inliers": int(mask.sum()),
-            "tilt_vs_hint_deg": geo.angle_between_deg(n, hint)}
+            "tilt_vs_hint_deg": tilt, "below_frac": below}
 
 
 def physics_prior(cloud_pts_cam: np.ndarray, up_imu: Optional[np.ndarray], imu_ok: bool,
@@ -95,3 +105,19 @@ def physics_prior(cloud_pts_cam: np.ndarray, up_imu: Optional[np.ndarray], imu_o
     return {"R_L_cam": level_rotation(up), "up_used_cam": np.asarray(up, float) / np.linalg.norm(up),
             "up_source": src, "height_m": fl["height_m"], "floor": fl, "imu_vs_floor_tilt_deg": tilt,
             "warnings": warnings}
+
+
+def no_floor_prior(cloud_pts_cam: np.ndarray, up_imu: np.ndarray, reason: str, cfg: AnchorConfig) -> dict:
+    """The camera sees no usable floor but the IMU is good: roll/pitch from the IMU; the height is NOT known here.
+    height_min_m is a hard lower bound (nothing the camera sees can be below the floor); the solve searches the
+    height above it against the map. The floor cross-check gates are reported as unavailable."""
+    up = np.asarray(up_imu, float) / np.linalg.norm(up_imu)
+    R = level_rotation(up)
+    zL = (cloud_pts_cam @ R.T)[:, 2]
+    h_min = max(float(-np.percentile(zL, 0.5)), 0.1)
+    msg = (f"no usable floor in the camera's view ({reason}). Roll/pitch come from the IMU and the height from the "
+           f"map match (searched {h_min:.2f}..{h_min + cfg.no_floor_height_span_m:.2f} m); the floor cross-checks are skipped "
+           f"and replaced by 'nothing the camera sees may end up below the map floor'.")
+    log.warning(msg)
+    return {"R_L_cam": R, "up_used_cam": up, "up_source": "imu", "height_m": None, "height_min_m": h_min,
+            "floor": None, "imu_vs_floor_tilt_deg": None, "warnings": [msg], "no_floor_reason": reason}

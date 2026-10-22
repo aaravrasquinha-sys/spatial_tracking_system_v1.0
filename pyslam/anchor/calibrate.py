@@ -23,7 +23,7 @@ from pyslam.anchor.config import AnchorConfig
 from pyslam.anchor.capture import StaticCapture
 from pyslam.anchor.query_cloud import capture_to_cloud, stable_mask
 from pyslam.anchor.room_frame import derive_room_frame, RoomFrame
-from pyslam.anchor.physics_prior import physics_prior
+from pyslam.anchor.physics_prior import physics_prior, no_floor_prior, PhysicsPriorError
 from pyslam.anchor.global_search import (build_map_raster, fine_config, query_slice, csm_search, distinct_peaks,
                                          refine_local, Candidate)
 from pyslam.anchor.icp import MapTarget, icp, colour_correlation, IcpResult
@@ -158,6 +158,23 @@ def _T_room_cam_from_seed(c: Candidate, h: float, R_L_cam: np.ndarray) -> np.nda
     return T_room_L @ lie.make_T(R_L_cam, np.zeros(3))
 
 
+def _height_from_map(tgt, pts_cam: np.ndarray, R_L: np.ndarray, c: Candidate, h_min: float, cfg: AnchorConfig,
+                     seed: int = 0, step: float = 0.02, n: int = 4000) -> float:
+    """No-floor mode: the camera height that puts the most camera points on the map (within fitness_dist_m),
+    searched from the lowest visible point (h_min, a hard lower bound) upwards. Horizontal edges in view
+    (sills, frames, shelves, the ceiling line) are what fix it; ICP refines it afterwards."""
+    rng = np.random.default_rng(seed)
+    sub = pts_cam[rng.choice(pts_cam.shape[0], min(n, pts_cam.shape[0]), replace=False)]
+    best_f, best_z = -1.0, h_min
+    for z in np.arange(h_min, h_min + cfg.no_floor_height_span_m + 1e-9, step):
+        T = _T_room_cam_from_seed(c, float(z), R_L)
+        d, _ = tgt.tree.query(sub @ T[:3, :3].T + T[:3, 3], distance_upper_bound=cfg.fitness_dist_m)
+        f = float(np.isfinite(d).mean())
+        if f > best_f + 1e-9:
+            best_f, best_z = f, float(z)
+    return best_z
+
+
 def _spread(Tref: np.ndarray, Ts: List[np.ndarray]) -> Tuple[float, float]:
     """max deviation from the mean of a set of poses, (metres, degrees), in Tref's tangent space."""
     if len(Ts) < 2:
@@ -202,26 +219,48 @@ def calibrate(map_bundle: dict, captures: List[StaticCapture], cfg: Optional[Anc
         raise RuntimeError(f"only {cloud['pts'].shape[0]} stable depth points survived filtering -- capture is too sparse "
                            f"(dark/IR-absorbing scene, shimmering surfaces, or the camera moved during capture)")
     imu_ok = bool(cap.imu_info.get("ok", False))
-    pp = physics_prior(cloud["pts"], cap.up_cam, imu_ok, cfg, seed)
+    try:
+        pp = physics_prior(cloud["pts"], cap.up_cam, imu_ok, cfg, seed)
+    except PhysicsPriorError as e:
+        if not (imu_ok and cap.up_cam is not None and cfg.allow_no_floor):
+            raise
+        pp = no_floor_prior(cloud["pts"], cap.up_cam, str(e), cfg)
     warnings += pp["warnings"]
     R_L = pp["R_L_cam"]
-    h = pp["height_m"]
+    no_floor = pp["height_m"] is None
+    h = pp["height_min_m"] if no_floor else pp["height_m"]      # no floor: slice from the lowest visible point
 
     # ---- Stage 3: global search ----
     pts_L = cloud["pts"] @ R_L.T
     q_xy, q_w = query_slice(pts_L, h, cfg, cloud["weights"])
-    raster = build_map_raster(pts_room, cfg)
-    fras = build_map_raster(pts_room, fine_config(cfg))
-    cands = csm_search(raster, q_xy, q_w, cfg, hint)
-    peaks = distinct_peaks(cands, cfg)
+    modes = ["count", "tall"] if cfg.csm_map_mode == "both" else [cfg.csm_map_mode]
+    peaks, fine_of, csm_ratio, csm_modes = [], [], None, {}
+    for mode in modes:
+        try:
+            raster = build_map_raster(pts_room, cfg, mode=mode)
+            fras_m = build_map_raster(pts_room, fine_config(cfg), mode=mode)
+        except ValueError as e:
+            if len(modes) > 1 and mode == "tall":
+                log.info(f"global search: {e}; using the point-count raster only")
+                continue
+            raise
+        pk_m = distinct_peaks(csm_search(raster, q_xy, q_w, cfg, hint), cfg)
+        csm_modes[mode] = len(pk_m)
+        if csm_ratio is None and pk_m:
+            csm_ratio = (pk_m[0].score / pk_m[1].score) if len(pk_m) > 1 and pk_m[1].score > 0 else float("inf")
+        for c in pk_m:                       # skip a peak another raster already proposed (same place and heading)
+            if any(np.hypot(c.x - o.x, c.y - o.y) < cfg.csm_distinct_xy_m and
+                   abs(np.degrees(geo.wrap_pi(c.yaw - o.yaw))) < cfg.csm_distinct_yaw_deg for o in peaks):
+                continue
+            peaks.append(c)
+            fine_of.append(fras_m)
     if not peaks:
         raise RuntimeError("global search produced no candidates (query has no structure inside the map extent)")
-    csm_ratio = (peaks[0].score / peaks[1].score) if len(peaks) > 1 and peaks[1].score > 0 else float("inf")
 
     # ---- Stage 4: ICP from every distinct peak, decide by ICP quality ----
     rows = []
     targets = []
-    for pk in peaks:
+    for pk, fras in zip(peaks, fine_of):
         rp = refine_local(fras, q_xy, q_w, pk)
         T_seed = _T_room_cam_from_seed(rp, h, R_L)
         tgt = None
@@ -237,6 +276,8 @@ def calibrate(map_bundle: dict, captures: List[StaticCapture], cfg: Optional[Anc
                 log.warning(f"peak at ({pk.x:.2f},{pk.y:.2f}): {e}")
                 continue
             targets.append((T_seed[:3, 3].copy(), tgt))
+        if no_floor:
+            T_seed = _T_room_cam_from_seed(rp, _height_from_map(tgt, cloud["pts"], R_L, rp, h, cfg, seed), R_L)
         res = icp(cloud["pts"], cloud["weights"], cloud["sigma"], tgt, T_seed, cfg)
         rows.append({"peak": pk, "refined": rp, "res": res, "target": tgt})
     if not rows:
@@ -249,7 +290,7 @@ def calibrate(map_bundle: dict, captures: List[StaticCapture], cfg: Optional[Anc
         if dt > cfg.csm_distinct_xy_m or dr > cfg.csm_distinct_yaw_deg:
             distinct = r
             break
-    ambiguity = {"csm_score_ratio": float(csm_ratio), "ambiguous": False, "second_fitness_ratio": None, "tiebreak": None,
+    ambiguity = {"csm_score_ratio": float(csm_ratio), "csm_peaks_per_raster": csm_modes, "ambiguous": False, "second_fitness_ratio": None, "tiebreak": None,
                  "n_candidates_icp": len(rows),
                  "candidates": [{"x": float(r["res"].T[0, 3]), "y": float(r["res"].T[1, 3]), "fitness": float(r["res"].fitness),
                                  "rmse_m": float(r["res"].rmse_m)} for r in rows]}
@@ -334,7 +375,10 @@ def calibrate(map_bundle: dict, captures: List[StaticCapture], cfg: Optional[Anc
     prof_map = map_bundle.get("capture_profile_sha")
     prof_cap = cap.capture_profile_sha
     profile_match = None if (prof_map is None or prof_cap is None) else (prof_map == prof_cap)
-    checks = V.run_checks(T, res, pp, cap.up_cam, imu_ok, ambiguity, repeat, dres, sigma, cfg, profile_match, rf.warnings)
+    z_room = cloud["pts"] @ T[2, :3] + T[2, 3]
+    below_floor = float(np.mean(z_room < -cfg.floor_fit_below_tol_m))
+    checks = V.run_checks(T, res, pp, cap.up_cam, imu_ok, ambiguity, repeat, dres, sigma, cfg, profile_match, rf.warnings,
+                          below_floor_frac=below_floor)
     accepted = all(c.passed for c in checks if c.required) and res.converged
     method = "imu_floor_prior+correlative_search+robust_icp"
     if ambiguity.get("tiebreak"):
@@ -344,8 +388,10 @@ def calibrate(map_bundle: dict, captures: List[StaticCapture], cfg: Optional[Anc
     report = {
         "accepted": accepted, "elapsed_s": time.time() - t0, "map_id": map_bundle["map_id"],
         "n_query_points": int(cloud["pts"].shape[0]), "up_source": pp["up_source"],
-        "physics": {"height_m": pp["height_m"], "floor_rms_m": pp["floor"]["rms_m"],
-                    "imu_vs_floor_tilt_deg": pp["imu_vs_floor_tilt_deg"], "imu_info": cap.imu_info},
+        "physics": {"height_m": pp["height_m"], "floor_rms_m": None if no_floor else pp["floor"]["rms_m"],
+                    "imu_vs_floor_tilt_deg": pp["imu_vs_floor_tilt_deg"], "imu_info": cap.imu_info,
+                    "no_floor": no_floor, "no_floor_reason": pp.get("no_floor_reason"),
+                    "height_from_map_m": float(T[2, 3]), "points_below_map_floor_frac": below_floor},
         "capture_selection": cap_sel,
         "ambiguity": ambiguity, "repeatability": repeat, "sigma": sigma,
         "icp": {"rmse_m": res.rmse_m, "fitness": res.fitness, "coverage": res.coverage, "n_inliers": res.n_inliers,

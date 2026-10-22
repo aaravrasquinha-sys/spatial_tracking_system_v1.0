@@ -1,7 +1,7 @@
 """
 Turn an offline-mapper result into the Module 1 map bundle that Module 2 reads.
 
-    <out>/dense/points.ply        the fused map, in W_cam0 (= the FIRST camera frame's optical frame:
+    <out>/dense/points.ply        the fused map (TSDF surface points; raw voxel average if open3d is missing), in W_cam0 (= the FIRST camera frame's optical frame:
                                   x right, y down, z forward, not gravity-aligned), coloured points
     <out>/capture_profile.json    the capture profile the recording was made with
     <out>/session_summary.json    QA numbers + plain-language warnings (copied into manifest.json at lock)
@@ -48,7 +48,14 @@ def _warnings(report: dict, n_points: int) -> list:
 def write_bundle(run_dir: str, out_dir: str, capture_profile_src: Optional[str], bag_path: Optional[str] = None,
                  min_neighbors: int = 2, voxel_m: float = 0.02) -> dict:
     off = os.path.join(run_dir, "offline")
-    cloud = os.path.join(off, "map_cloud.ply")
+    # the TSDF surface points are the clean map (free space carved, one surface per wall); the raw voxel
+    # average is only the fallback when open3d is missing (it keeps smeared junk and thick, doubled walls)
+    cloud = os.path.join(off, "map_tsdf_points.ply")
+    source = "tsdf_surface"
+    if not os.path.exists(cloud):
+        cloud, source = os.path.join(off, "map_cloud.ply"), "voxel_average"
+        log.warning("map_tsdf_points.ply not found: the bundle uses the raw voxel-average cloud (open3d missing?). "
+                    "Module 2 anchoring works best on the TSDF surface.")
     if not os.path.exists(cloud):
         raise FileNotFoundError(f"{cloud} missing -- the offline mapper did not produce a fused cloud "
                                 f"(was the recording passed with --bag, and did any frame get fused?)")
@@ -95,7 +102,7 @@ def write_bundle(run_dir: str, out_dir: str, capture_profile_src: Optional[str],
     with open(os.path.join(off, "report.json")) as f:
         report = json.load(f)
     summary = {"mode": "offline", "builder": "pyslam_offline", "source_bag": bag_path, "run_dir": run_dir,
-               "n_points": int(pts.shape[0]), "frame": "W_cam0",
+               "n_points": int(pts.shape[0]), "frame": "W_cam0", "points_source": source,
                "qa": {"frames": report["evidence"].get("frames"), "keyframes": report["evidence"].get("keyframes"),
                       "frames_lost": report["evidence"].get("frames_lost"),
                       "loops_final": report.get("loops", {}).get("loops_final"),

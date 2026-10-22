@@ -42,7 +42,8 @@ def _ge(name, v, thr, unit_note="", required=True, fmt="{:.4g}"):
 
 def run_checks(T: np.ndarray, icp_res, physics: dict, up_imu: Optional[np.ndarray], imu_ok: bool,
                ambiguity: dict, repeat: dict, depth_res: dict, sigma: dict, cfg: AnchorConfig,
-               profile_match: Optional[bool], room_warnings: List[str]) -> List[Check]:
+               profile_match: Optional[bool], room_warnings: List[str],
+               below_floor_frac: Optional[float] = None) -> List[Check]:
     ch: List[Check] = []
     ch.append(_le("icp_inlier_rmse_m", icp_res.rmse_m, cfg.gate_icp_rmse_m))
     ch.append(_ge("icp_fitness", icp_res.fitness, cfg.gate_fitness_min, f"share of query points within {cfg.fitness_dist_m*100:.0f} cm of the map"))
@@ -57,16 +58,29 @@ def run_checks(T: np.ndarray, icp_res, physics: dict, up_imu: Optional[np.ndarra
         ch.append(Check("roll_pitch_vs_imu_deg", None, f"<= {cfg.gate_imu_tilt_deg}", not cfg.require_imu, cfg.require_imu,
                         "IMU unavailable/unusable -- check skipped" + (" (require_imu=True => FAIL)" if cfg.require_imu else "")))
     fl = physics["floor"]
-    ch.append(_le("height_vs_floor_fit_m", abs(float(T[2, 3]) - fl["height_m"]), cfg.gate_floor_height_m,
-                  "camera height above the MAP floor vs height above the camera's OWN floor fit"))
-    ch.append(_le("tilt_vs_floor_fit_deg", geo.angle_between_deg(up_pose, fl["up_floor_cam"]), cfg.gate_floor_tilt_deg))
+    if fl is not None:
+        ch.append(_le("height_vs_floor_fit_m", abs(float(T[2, 3]) - fl["height_m"]), cfg.gate_floor_height_m,
+                      "camera height above the MAP floor vs height above the camera's OWN floor fit"))
+        ch.append(_le("tilt_vs_floor_fit_deg", geo.angle_between_deg(up_pose, fl["up_floor_cam"]), cfg.gate_floor_tilt_deg))
+    else:
+        skip = "camera sees no usable floor -- cross-check unavailable; height comes from the map match"
+        ch.append(Check("height_vs_floor_fit_m", None, f"<= {cfg.gate_floor_height_m}", True, False, skip))
+        ch.append(Check("tilt_vs_floor_fit_deg", None, f"<= {cfg.gate_floor_tilt_deg}", True, False, skip))
+    if below_floor_frac is not None:
+        # nothing the camera sees can be below the floor: catches a wrong height in no-floor mode (required there)
+        ch.append(_le("points_below_map_floor_frac", below_floor_frac, cfg.gate_below_floor_frac,
+                      f"share of the camera's points more than {cfg.floor_fit_below_tol_m * 100:.0f} cm below the map floor"
+                      + ("" if fl is None else " (informational: the floor cross-check is active)"), required=fl is None))
     # --- global uniqueness ---
     ch.append(Check("global_uniqueness", ambiguity.get("second_fitness_ratio"),
                     f"no distinct pose with >= {cfg.ambiguity_icp_fitness_ratio:.2f}x best fitness (unless tie-broken/hinted)",
                     not ambiguity["ambiguous"], True, ambiguity.get("note", "")))
     # --- observability & uncertainty ---
-    ch.append(_ge("observability_min_eig", icp_res.obs_min_eig, cfg.gate_min_observability,
-                  f"weakest direction: {icp_res.obs_worst}", fmt="{:.4g}"))
+    obs_thr = cfg.gate_min_observability if fl is not None else max(cfg.gate_min_observability,
+                                                                     cfg.gate_min_observability_no_floor)
+    ch.append(_ge("observability_min_eig", icp_res.obs_min_eig, obs_thr,
+                  f"weakest direction: {icp_res.obs_worst}" + ("" if fl is not None else " (stricter: no floor in view)"),
+                  fmt="{:.4g}"))
     ch.append(_le("sigma_trans_m", sigma["trans_m"], cfg.gate_sigma_trans_m, "combined ICP+repeat+map-floor"))
     ch.append(_le("sigma_rot_deg", sigma["rot_deg"], cfg.gate_sigma_rot_deg, "0.3 deg ~ 2.6 cm at 5 m"))
     # --- repeatability ---
