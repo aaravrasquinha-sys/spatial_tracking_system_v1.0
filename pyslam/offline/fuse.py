@@ -197,6 +197,9 @@ def fuse_bag(bag_path: str, frame_poses: List[Tuple[float, np.ndarray]], frame_s
 
     out = {"frames_read": n_seen, "frames_fused": n_used, "frames_skipped_lost": n_lost,
            "frames_without_pose": n_nopose, "voxel_m": voxel, "seconds": round(time.time() - t0, 1)}
+    if n_used == 0:
+        log.error(f"NO frame was fused ({n_seen} read, {n_nopose} without a pose, {n_lost} lost): "
+                  f"the recording does not match this run folder (wrong --bag?) or the timestamps differ")
     pts, rgb = fuser.result()
     cloud_path = os.path.join(out_dir, "map_cloud.ply")
     _write_ply_points(cloud_path, pts, rgb)
