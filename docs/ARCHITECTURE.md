@@ -42,7 +42,7 @@ partial JSON; `site.json` also preserves unknown keys. An old file never breaks 
 
 | Slot | Default (built) | Reserved names (planned, **refused** until built) | Contract |
 |---|---|---|---|
-| `map_builder` | `pyslam_live` | `rtabmap_reference`, `tsdf_rebuild_from_bag` | leaves a map bundle |
+| `map_builder` | `pyslam_offline` (also `pyslam_live`) | `rtabmap_reference` | leaves a map bundle |
 | `map_finalizer` | `manifest_lock` (+ `noop`) | `acceptance_suite` | must keep the `map_id` rule |
 | `anchor_solver` | `pyslam_anchor` | `fpfh_cross_check` | produces the anchor bundle; rejected => `.REJECTED.json` |
 | `anchor_capture_filter` | `none` | `m3_person_mask` | per-frame person mask for static capture |

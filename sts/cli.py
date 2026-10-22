@@ -173,7 +173,8 @@ def cmd_map(args) -> int:
     builder = reg.create("map_builder", site.slots.get("map_builder"))
     pinned = bool(site.map.dir)
     out = site.map_dir() if pinned else site.maps_root() / site.new_map_name()
-    cmd = builder.build(site, args.cam, extra_args=args.extra, record=not args.no_record, out_dir=out,
+    extra = (["--bag", args.bag] if getattr(args, "bag", None) else []) + list(args.extra or [])
+    cmd = builder.build(site, args.cam, extra_args=extra, record=not args.no_record, out_dir=out,
                         overrides=site.map_overrides())
     print(f"new map folder: {out}")
     rc = _run_command(site, cmd, mode="map")
@@ -395,7 +396,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("boundaries", help="import-boundary check"); p.set_defaults(fn=cmd_boundaries)
     p = sub.add_parser("contracts", help="validate a file against a contract schema"); p.add_argument("--file"); p.add_argument("--schema"); p.set_defaults(fn=cmd_contracts)
 
-    p = sub.add_parser("map", help="M1: live mapping (records a bag by default)"); cam(p); p.add_argument("--no-record", action="store_true"); p.add_argument("--no-activate", action="store_true", help="save the map but keep the current active map")
+    p = sub.add_parser("map", help="M1: live mapping (records a bag by default)"); cam(p); p.add_argument("--no-record", action="store_true"); p.add_argument("--bag", default=None, help="recording to map (offline builder)"); p.add_argument("--no-activate", action="store_true", help="save the map but keep the current active map")
     p.add_argument("extra", nargs=argparse.REMAINDER, help="extra args for run_live_map.py after `--`"); p.set_defaults(fn=cmd_map)
     p = sub.add_parser("maps", help="list saved maps (* = active)"); p.set_defaults(fn=cmd_maps)
     p = sub.add_parser("map-use", help="make a saved map the active one"); p.add_argument("name", help="folder name, unique prefix, or 'latest'"); p.set_defaults(fn=cmd_map_use)

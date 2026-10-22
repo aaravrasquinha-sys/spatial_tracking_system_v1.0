@@ -27,3 +27,11 @@ unchanged so the live chain and the test gates behave as before. Redo only the m
 Known limits: needs loops (a walk that never revisits a place gets no loop correction); repeated
 texture can still produce wrong loops; long bare-wall stretches still lose tracking; memory/time grow
 with keyframe count (use `--voxel 0.03 --stride 3` for very long walks).
+
+## As Module 1 (`sts map`)
+
+The offline mapper is the default `map_builder` slot (`pyslam_offline`, `sts/adapters/offline.py`). `sts map --bag FILE`
+runs `run_map.py FILE --bundle <map folder>`; `pyslam/offline/bundle.py` then writes the bundle Module 2 reads:
+`dense/points.ply` (the fused cloud, rebased so the first camera frame is the origin = W_cam0, isolated voxels removed),
+`capture_profile.json`, `session_summary.json` (QA numbers + warnings). Only the first two decide `map_id`, so locking and
+anchoring behave exactly as with the live builder. An empty map writes no bundle and nothing is activated.

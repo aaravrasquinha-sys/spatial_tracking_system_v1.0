@@ -80,6 +80,49 @@ class PyslamLiveMapBuilder:
         return Command(argv, f"M1 live mapping -> {out}", needs_camera=True)
 
 
+class PyslamOfflineMapBuilder:
+    """Wraps run_map.py: a RECORDED bag -> offline mapper (loop closing over all keyframes, robust pose graph,
+    TSDF/voxel fusion) -> the same map bundle as the live builder (dense/points.ply in W_cam0, capture_profile.json,
+    session_summary.json). No camera is needed. The bag is `--bag FILE` (in the extra args) or the newest
+    recording in the site's recordings folder."""
+
+    EXTS = (".db3", ".bag", ".npz")
+
+    def _pick_bag(self, site: SiteConfig, extra: List[str]):
+        rest, bag, i = [], None, 0
+        while i < len(extra):
+            if extra[i] == "--bag" and i + 1 < len(extra):
+                bag, i = extra[i + 1], i + 2
+            else:
+                rest.append(extra[i])
+                i += 1
+        if bag is None:
+            rec = site.recordings_dir()
+            found = sorted((p for p in rec.glob("*") if p.suffix.lower() in self.EXTS), key=lambda p: p.stat().st_mtime) \
+                if rec.exists() else []
+            if not found:
+                raise SiteError(f"no recording given and none in {rec}. Pass one: `sts map --bag FILE.db3` "
+                                f"(record it first; the offline mapper never opens the camera)")
+            bag = str(found[-1])
+        if not os.path.exists(os.path.expanduser(bag)):
+            raise SiteError(f"recording {bag} not found")
+        return os.path.expanduser(bag), rest
+
+    def build(self, site: SiteConfig, cam_id: Optional[str], extra_args: Optional[List[str]] = None,
+              record: bool = True, bag_name: Optional[str] = None, out_dir: Optional[Path] = None,
+              overrides: Optional[Dict[str, object]] = None) -> Command:
+        out = Path(out_dir) if out_dir else site.map_dir()
+        bag, extra = self._pick_bag(site, [a for a in (extra_args or []) if a != "--"])
+        argv = [sys.executable, "run_map.py", bag, "--bundle", str(out),
+                "--capture-profile", str(site.capture_profile_path())]
+        for k, v in (overrides or {}).items():
+            # live-only options (queue sizes, dense_* live tuning) are not meaningful offline; the offline profile
+            # in pyslam/offline/profile.py decides the tracking settings. Hand-typed --config-override still wins.
+            pass
+        argv += extra
+        return Command(argv, f"M1 OFFLINE mapping {bag} -> {out}", needs_camera=False)
+
+
 # ------------------------------------------------------------------ map_finalizer
 class ManifestLockFinalizer:
     """Writes manifest.json + map_id and makes the bundle read-only, using M1's own
@@ -208,6 +251,7 @@ class PointsOnlyAssets:
 
 def register(reg) -> None:
     reg.register("map_builder", "pyslam_live", PyslamLiveMapBuilder)
+    reg.register("map_builder", "pyslam_offline", PyslamOfflineMapBuilder)
     reg.register("map_finalizer", "manifest_lock", ManifestLockFinalizer)
     reg.register("map_finalizer", "noop", NoopFinalizer)
     reg.register("anchor_solver", "pyslam_anchor", PyslamAnchorSolver)

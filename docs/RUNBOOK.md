@@ -141,6 +141,18 @@ add a reference pipeline (`map_builder` slot, reserved `rtabmap_reference`).
 * Tare check done (Part 1). Capture profile: `configs/capture_profile.mapping.json` (hole-filling **off** on purpose — filled
   depth invents values at discontinuities, wrong for geometry).
 
+### Offline mapping (the default M1 builder, slot `pyslam_offline`)
+Record the walk to a bag first (the camera is only needed for that), then map it with no real-time limits:
+```bash
+python -m sts map --bag ~/bags/room2.db3      # or no --bag: the newest file in data/recordings/<site>/
+python -m sts map-lock
+```
+It replays the bag through the tracker with the offline settings (`pyslam/offline/profile.py`), closes loops over ALL
+keyframes, fuses every tracked frame, and writes the usual bundle (`dense/points.ply` in W_cam0, `capture_profile.json`,
+`session_summary.json`; mesh and loop list under `offline_map/`). `map_id` and `map-lock` work exactly as for the live
+builder, so `sts anchor` takes this map unchanged. Re-mapping gives a new `map_id`: redo the anchor. To use the old live
+builder: set `"slots": {"map_builder": "pyslam_live"}` in site.json. Details: `docs/OFFLINE_MAPPING.md`.
+
 ### Capture protocol
 1. Start: `python -m sts map` (records `data/recordings/<site>/map_<ts>.bag`; Ctrl-C stops and writes the PLY).
    Optional denser keyframes for this run: `python -m sts map -- --config-override keyframe_trans_m=0.10 keyframe_rot_deg=10`.

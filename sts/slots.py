@@ -25,10 +25,10 @@ class SlotSpec:
 
 
 SLOTS: Dict[str, SlotSpec] = {s.name: s for s in [
-    SlotSpec("map_builder", "pyslam_live", "offline",
+    SlotSpec("map_builder", "pyslam_offline", "offline",
              "build(site, cam, extra_args) -> Command. Must leave maps/<site>/dense/points.ply (+ capture_profile.json) "
              "in M1's W_cam0 frame. See contracts/map_bundle.md.",
-             reserved=("rtabmap_reference", "tsdf_rebuild_from_bag")),
+             reserved=("rtabmap_reference",)),
     SlotSpec("map_finalizer", "manifest_lock", "offline",
              "finalize(site, read_only) -> {map_id, manifest_path}. MUST compute map_id over the SAME content files "
              "as M2's resolve_map_id (dense/points.ply + capture_profile.json) or every existing anchor is invalidated. "

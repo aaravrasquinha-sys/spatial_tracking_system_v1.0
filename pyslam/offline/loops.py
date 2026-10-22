@@ -261,6 +261,11 @@ def close_loops(nodes: Dict[int, object], init: Dict[int, np.ndarray], base_edge
     stats["bridge_gap_pairs_tried"] = len(gap_pairs)
     stats["bridge_gap_links_verified"] = len(gap_loops)
 
+    if not any(n.sig.desc.shape[0] > 0 for n in nodes.values()):
+        log.warning("no keyframe has image features -- no loops can be searched; keeping the odometry/bridge poses")
+        stats.update({"appearance_candidates": 0, "appearance_loops_verified": 0, "loops_final": 0,
+                      "loop_time_gap_s": None, "no_descriptors": True})
+        return init, [], stats
     bow_ids, V = build_bow(nodes, p)
     pairs = appearance_candidates(bow_ids, V, times, p)
     stats["appearance_candidates"] = len(pairs)

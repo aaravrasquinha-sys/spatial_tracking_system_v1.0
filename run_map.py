@@ -15,6 +15,7 @@ Everything lands in runs/run_<time>_bag/ ; the finished map is in runs/run_<time
                           [--config-override KEY=VALUE ...]      (tracking settings)
                           [--stride 2] [--voxel 0.02] [--depth-trunc 3.0] [--no-open3d]
                           [--min-gap-s 20] [--top-k 5] [--min-inliers 25]   (offline mapper)
+                          [--bundle DIR [--capture-profile P]]   also write the Module 1 map bundle
                           [--tracking-only]      stop after step 1
                           [--map-only RUN_DIR]   skip step 1, redo step 2 on an existing run folder
 
@@ -95,6 +96,10 @@ def main() -> None:
                                ("--min-gap-s", float, 20.0), ("--top-k", int, 5), ("--min-inliers", int, 25)):
         ap.add_argument(name, type=typ, default=default)
     ap.add_argument("--no-open3d", action="store_true")
+    ap.add_argument("--bundle", metavar="DIR", default=None,
+                    help="also write the Module 1 map bundle (dense/points.ply, capture_profile.json, "
+                         "session_summary.json) into DIR -- what `sts map` uses; Module 2 reads it")
+    ap.add_argument("--capture-profile", default=None, help="capture profile the recording was made with (for --bundle)")
     args = ap.parse_args()
 
     if args.map_only:
@@ -125,6 +130,12 @@ def main() -> None:
     rc = subprocess.call(cmd)
     if rc != 0:
         sys.exit(f"offline mapping failed (exit {rc}); the tracking results are still in {run_dir}")
+    if args.bundle:
+        from pyslam.offline.bundle import write_bundle
+        summ = write_bundle(run_dir, args.bundle, args.capture_profile, bag_path=args.bag_path)
+        print(f"\nMAP BUNDLE written: {args.bundle}  ({summ['n_points']} points)")
+        for w in summ["warnings"]:
+            print(f"  WARNING: {w}")
     print(f"\nFINISHED. map: {os.path.join(run_dir, 'offline')}")
 
 
