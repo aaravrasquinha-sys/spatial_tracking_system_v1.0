@@ -1,5 +1,5 @@
 
-!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Run Module 5 (dashboard + VR publisher).
 
